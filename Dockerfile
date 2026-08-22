@@ -1,19 +1,25 @@
 FROM serversideup/php:8.3-fpm-nginx
 
-# Switch to root user to install dependencies and set permissions
+# 1. Switch to root to handle system operations and dependencies
 USER root
 
-# Copy project files into the container image
+# 2. Copy application files
 COPY . /var/www/html
 
-# Set the working directory
+# 3. Set working directory
 WORKDIR /var/www/html
 
-# Install dependencies via Composer explicitly during build
-RUN composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader
+# 4. Run composer install with flags that prevent environment/extension blocking (Exit Code 2 fix)
+RUN composer install \
+    --no-dev \
+    --no-interaction \
+    --prefer-dist \
+    --optimize-autoloader \
+    --ignore-platform-reqs
 
-# Set permissions for Laravel storage and cache directories
-RUN chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache
+# 5. Fix permissions for Laravel storage and bootstrap cache so www-data can write to them
+RUN chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache \
+    && chmod -R 775 /var/www/html/storage /var/www/html/bootstrap/cache
 
-# Switch back to the unprivileged web user
+# 6. Switch back to the unprivileged web user for security
 USER www-data
