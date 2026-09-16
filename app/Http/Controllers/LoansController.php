@@ -61,7 +61,7 @@ class LoansController extends Controller
      */
     public function update(Request $request, Loan $loan)
     {
-        $validated = $this->validated($request);
+        $validated = $this->validated($request, $loan);
 
         if (empty($validated['password'])) {
             unset($validated['password']);
@@ -82,10 +82,53 @@ class LoansController extends Controller
         return response()->json(null, 204);
     }
 
-    private function validated(Request $request): array
+    /**
+     * Record a payment against this loan: logs it to the ledger and adds it
+     * to total_paid. This is the intended way to reflect a borrower's
+     * payment — not editing total_paid directly.
+     */
+    public function recordPayment(Request $request, Loan $loan)
+    {
+        $validated = $request->validate([
+            'amount' => 'required|numeric|min:0.01',
+            'note' => 'sometimes|nullable|string',
+            'paid_at' => 'sometimes|date',
+        ]);
+
+        $payment = $loan->payments()->create([
+            'amount' => $validated['amount'],
+            'note' => $validated['note'] ?? null,
+            'paid_at' => $validated['paid_at'] ?? today(),
+            'recorded_by' => $request->user()->id,
+        ]);
+
+        $loan->increment('total_paid', $validated['amount']);
+        $loan->refresh();
+
+        if ($loan->balance <= 0 && ! in_array($loan->status, ['paid', 'cancelled', 'defaulted'], true)) {
+            $loan->update(['status' => 'paid']);
+        }
+
+        return response()->json([
+            'loan' => $loan->fresh(),
+            'payment' => $payment,
+        ], 201);
+    }
+
+    /**
+     * The computed daily interest breakdown merged with recorded payments,
+     * for the admin to review the same ledger the borrower sees.
+     */
+    public function history(Loan $loan)
+    {
+        return response()->json($loan->history());
+    }
+
+    private function validated(Request $request, ?Loan $loan = null): array
     {
         return $request->validate([
             'name' => 'required|string|max:255',
+            'username' => ['required', 'string', 'max:255', Rule::unique('loans', 'username')->ignore($loan?->id)],
             'email' => 'sometimes|nullable|email|max:255',
             'password' => 'sometimes|nullable|string|min:6',
             'phone' => 'sometimes|nullable|string|max:30',
