@@ -2,16 +2,20 @@
 
 namespace App\Models;
 
+use Illuminate\Auth\Authenticatable as AuthenticatableTrait;
+use Illuminate\Contracts\Auth\Authenticatable as AuthenticatableContract;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Laravel\Sanctum\HasApiTokens;
 
-class Loan extends Model
+class Loan extends Model implements AuthenticatableContract
 {
-    use SoftDeletes;
+    use AuthenticatableTrait, HasApiTokens, SoftDeletes;
 
     protected $fillable = [
         'name',
+        'username',
         'email',
         'password',
         'phone',
@@ -86,5 +90,74 @@ class Loan extends Model
     public function creator()
     {
         return $this->belongsTo(User::class, 'created_by');
+    }
+
+    public function payments()
+    {
+        return $this->hasMany(LoanPayment::class);
+    }
+
+    /**
+     * The total interest owed over the loan's term, spread evenly across each
+     * day from start_date up to today (capped at due_date). This is a display
+     * breakdown only — it doesn't change `interest_amount`/`balance`, which
+     * still assume the full interest is owed from day one.
+     */
+    public function dailyInterestEntries(): array
+    {
+        if (! $this->start_date || ! $this->due_date) {
+            return [];
+        }
+
+        $start = $this->start_date->copy()->startOfDay();
+        $termEnd = $this->due_date->copy()->startOfDay();
+        $cutoff = $termEnd->lt(today()) ? $termEnd : today();
+
+        $totalDays = max(1, $start->diffInDays($termEnd) + 1);
+        $dailyAmount = round($this->interest_amount / $totalDays, 2);
+
+        $entries = [];
+
+        if ($cutoff->gte($start)) {
+            $cursor = $start->copy();
+            $day = 1;
+
+            while ($cursor->lte($cutoff)) {
+                $entries[] = [
+                    'type' => 'interest',
+                    'date' => $cursor->toDateString(),
+                    'day' => $day,
+                    'amount' => $dailyAmount,
+                    'note' => "Day {$day} interest",
+                ];
+                $cursor->addDay();
+                $day++;
+            }
+        }
+
+        return $entries;
+    }
+
+    /**
+     * The full ledger for this loan: computed daily interest entries merged
+     * with real, recorded payments, sorted oldest to newest.
+     */
+    public function history(): array
+    {
+        $entries = $this->dailyInterestEntries();
+
+        foreach ($this->payments()->with('recordedBy')->orderBy('paid_at')->get() as $payment) {
+            $entries[] = [
+                'type' => 'payment',
+                'date' => $payment->paid_at->toDateString(),
+                'amount' => (float) $payment->amount,
+                'note' => $payment->note,
+                'recorded_by' => $payment->recordedBy?->name,
+            ];
+        }
+
+        usort($entries, fn ($a, $b) => $a['date'] <=> $b['date']);
+
+        return $entries;
     }
 }
