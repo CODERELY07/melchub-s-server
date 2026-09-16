@@ -14,12 +14,14 @@ class AuthController extends Controller
     {
         $request->validate([
             'name' => 'required|string|max:255',
-            'email' => 'required|email|unique:users',
+            'username' => 'required|string|max:255|unique:users',
+            'email' => 'nullable|email|unique:users,email',
             'password' => 'required|min:6',
         ]);
 
         $user = User::create([
             'name' => $request->name,
+            'username' => $request->username,
             'email' => $request->email,
             'password' => Hash::make($request->password),
         ]);
@@ -36,13 +38,13 @@ class AuthController extends Controller
 
     public function login(Request $request)
     {
-        if (!Auth::attempt($request->only('email', 'password'))) {
+        if (!Auth::attempt($request->only('username', 'password'))) {
             return response()->json([
                 'message' => 'Invalid Credentials'
             ], 401);
         }
 
-        $user = User::where('email', $request->email)->first();
+        $user = User::where('username', $request->username)->first();
         $token = $user->createToken('auth_token')->plainTextToken;
 
         return response()->json([
