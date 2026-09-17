@@ -42,6 +42,14 @@ return [
         'sim_number' => env('SMS_GATEWAY_SIM_NUMBER'),
     ],
 
+    // The deployed Next.js site — linked from every outgoing SMS (see
+    // NotificationController/BorrowerAuthController) so a borrower can tap
+    // straight through to it. Root "/" already redirects to the right place
+    // (borrower login if signed out, their dashboard if signed in), and on
+    // Android with the PWA installed, the OS may open it in the installed
+    // app instead of a browser tab.
+    'frontend_url' => env('FRONTEND_URL', 'https://melchub-s.vercel.app'),
+
     'supabase_storage' => [
         // Project URL, e.g. https://xxxxxxxx.supabase.co — from Supabase's
         // dashboard under Project Settings > API. Not the same as the

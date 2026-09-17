@@ -33,8 +33,10 @@ class NotificationController extends Controller
             'message' => 'required|string|max:640',
         ]);
 
+        $message = $validated['message'].$this->accountLinkLine();
+
         try {
-            $this->sms->send($loan->phone, $validated['message']);
+            $this->sms->send($loan->phone, $message);
         } catch (RuntimeException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
         }
@@ -122,11 +124,12 @@ class NotificationController extends Controller
         $gcashLine = $gcashNumber
             ? " Please pay via GCash: {$gcashNumber}".($gcashName ? " ({$gcashName})" : '').'.'
             : '';
+        $linkLine = $this->accountLinkLine();
 
         if (! $loan->due_date) {
             return [
                 'text' => "Hi {$loan->name}, this is a reminder from MELCHUB about your loan {$loan->loan_number}. "
-                    .'Current balance: ₱'.number_format($loan->balance, 2).".{$gcashLine}",
+                    .'Current balance: ₱'.number_format($loan->balance, 2).".{$gcashLine}{$linkLine}",
                 'apply' => null,
             ];
         }
@@ -137,7 +140,7 @@ class NotificationController extends Controller
             if ($alreadyNotifiedToday) {
                 return [
                     'text' => "Hi {$loan->name}, your MELCHUB loan {$loan->loan_number} is still LATE. "
-                        .'Balance due: ₱'.number_format($loan->balance, 2).', due '.$loan->due_date->format('M d, Y').".{$gcashLine}",
+                        .'Balance due: ₱'.number_format($loan->balance, 2).', due '.$loan->due_date->format('M d, Y').".{$gcashLine}{$linkLine}",
                     'apply' => null,
                 ];
             }
@@ -148,7 +151,7 @@ class NotificationController extends Controller
             return [
                 'text' => "Hi {$loan->name}, your MELCHUB loan {$loan->loan_number} is now LATE. "
                     .'A ₱15.00 late fee has been added and your due date moved to '.$newDueDate->format('M d, Y').'. '
-                    .'New balance: ₱'.number_format($projectedBalance, 2).".{$gcashLine}",
+                    .'New balance: ₱'.number_format($projectedBalance, 2).".{$gcashLine}{$linkLine}",
                 'apply' => function () use ($loan, $newDueDate) {
                     $loan->chargePenalty(15, 'Late payment fee (auto-applied when notifying an overdue loan)');
                     $loan->due_date = $newDueDate;
@@ -160,15 +163,31 @@ class NotificationController extends Controller
         if ($loan->due_date->isToday()) {
             return [
                 'text' => "Hi {$loan->name}, your MELCHUB loan {$loan->loan_number} payment of ₱"
-                    .number_format($loan->balance, 2).' is due TODAY ('.$loan->due_date->format('M d, Y').").{$gcashLine}",
+                    .number_format($loan->balance, 2).' is due TODAY ('.$loan->due_date->format('M d, Y').").{$gcashLine}{$linkLine}",
                 'apply' => null,
             ];
         }
 
         return [
             'text' => "Hi {$loan->name}, reminder: your MELCHUB loan {$loan->loan_number} of ₱"
-                .number_format($loan->balance, 2).' is due on '.$loan->due_date->format('M d, Y').".{$gcashLine}",
+                .number_format($loan->balance, 2).' is due on '.$loan->due_date->format('M d, Y').".{$gcashLine}{$linkLine}",
             'apply' => null,
         ];
+    }
+
+    /**
+     * " View your account: https://..." (or "" if FRONTEND_URL is unset) —
+     * shared by composeMessage() and sendCustom() so every outgoing SMS,
+     * whether auto-composed or admin-typed, ends with a tappable link to the
+     * site. Root "/" there already redirects to the right place for whoever
+     * opens it (see client/app/page.tsx), and on Android with the PWA
+     * installed, the OS may open it in the installed app instead of a
+     * browser tab.
+     */
+    private function accountLinkLine(): string
+    {
+        $url = rtrim((string) config('services.frontend_url'), '/');
+
+        return $url ? " View your account: {$url}" : '';
     }
 }

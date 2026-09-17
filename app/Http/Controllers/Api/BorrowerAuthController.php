@@ -139,12 +139,29 @@ class BorrowerAuthController extends Controller
     {
         $message = "Hi {$loan->name}, welcome to MELCHUB! Your loan of ₱".number_format((float) $loan->total_loan, 2)
             ." is now active, starting {$loan->start_date->format('M d, Y')} and due on {$loan->due_date->format('M d, Y')}. "
-            .'Thank you for your trust — we\'re glad to have you with us and wish you all the best!';
+            .'Thank you for your trust — we\'re glad to have you with us and wish you all the best!'
+            .$this->accountLinkLine();
 
         try {
             $this->sms->send($loan->phone, $message);
         } catch (Throwable $e) {
             Log::warning("Failed to send welcome SMS for loan {$loan->id}: {$e->getMessage()}");
         }
+    }
+
+    /**
+     * " View your account: https://..." (or "" if FRONTEND_URL is unset) —
+     * same helper/text as NotificationController::accountLinkLine(), kept
+     * as a small duplicate rather than a shared trait for two controllers,
+     * one call site each. Root "/" there already redirects to the right
+     * place for whoever opens it (see client/app/page.tsx), and on Android
+     * with the PWA installed, the OS may open it in the installed app
+     * instead of a browser tab.
+     */
+    private function accountLinkLine(): string
+    {
+        $url = rtrim((string) config('services.frontend_url'), '/');
+
+        return $url ? " View your account: {$url}" : '';
     }
 }
