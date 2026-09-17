@@ -105,7 +105,7 @@ class LoansController extends Controller
         $loan->increment('total_paid', $validated['amount']);
         $loan->refresh();
 
-        if ($loan->balance <= 0 && ! in_array($loan->status, ['paid', 'cancelled', 'defaulted'], true)) {
+        if ($loan->balance <= 0 && ! in_array($loan->status, Loan::CLOSED_STATUSES, true)) {
             $loan->update(['status' => 'paid']);
         }
 

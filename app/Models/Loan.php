@@ -40,6 +40,11 @@ class Loan extends Model implements AuthenticatableContract
         'is_overdue',
     ];
 
+    /**
+     * Statuses that stop interest from accruing any further.
+     */
+    public const CLOSED_STATUSES = ['paid', 'cancelled', 'defaulted'];
+
     protected function casts(): array
     {
         return [
@@ -49,6 +54,7 @@ class Loan extends Model implements AuthenticatableContract
             'interest_rate' => 'decimal:2',
             'start_date' => 'date',
             'due_date' => 'date',
+            'closed_at' => 'date',
         ];
     }
 
@@ -61,13 +67,56 @@ class Loan extends Model implements AuthenticatableContract
                 'loan_number' => 'LN-'.str_pad((string) $loan->id, 6, '0', STR_PAD_LEFT),
             ])->saveQuietly();
         });
+
+        // closed_at is managed automatically from status, not user-editable:
+        // freeze interest accrual the moment a loan is settled, and resume it
+        // if a closed loan is ever manually reopened.
+        static::saving(function (Loan $loan) {
+            $isClosed = in_array($loan->status, self::CLOSED_STATUSES, true);
+            if ($isClosed && ! $loan->closed_at) {
+                $loan->closed_at = today();
+            } elseif (! $isClosed && $loan->closed_at) {
+                $loan->closed_at = null;
+            }
+        });
+    }
+
+    /**
+     * interest_rate is a daily rate: this loan accrues this many pesos of
+     * interest for every day it remains open, on the original principal.
+     */
+    private function dailyInterestAmount(): float
+    {
+        return round(((float) $this->total_loan) * ((float) $this->interest_rate) / 100, 2);
+    }
+
+    /**
+     * The last day interest should count for — today, or the day the loan
+     * was closed if it already has been. Null if the loan hasn't started yet.
+     */
+    private function accrualCutoff(): ?\Illuminate\Support\Carbon
+    {
+        if (! $this->start_date) {
+            return null;
+        }
+
+        $cutoff = $this->closed_at ? $this->closed_at->copy()->startOfDay() : today();
+
+        return $cutoff->lt($this->start_date) ? null : $cutoff;
     }
 
     protected function interestAmount(): Attribute
     {
-        return Attribute::get(
-            fn () => round(((float) $this->total_loan) * ((float) $this->interest_rate) / 100, 2)
-        );
+        return Attribute::get(function () {
+            $cutoff = $this->accrualCutoff();
+            if (! $cutoff) {
+                return 0.0;
+            }
+
+            $days = $this->start_date->copy()->startOfDay()->diffInDays($cutoff) + 1;
+
+            return round($this->dailyInterestAmount() * $days, 2);
+        });
     }
 
     protected function balance(): Attribute
@@ -81,7 +130,7 @@ class Loan extends Model implements AuthenticatableContract
     {
         return Attribute::get(
             // A loan only counts as overdue once the day after its due date has started.
-            fn () => ! in_array($this->status, ['paid', 'cancelled', 'defaulted'], true)
+            fn () => ! in_array($this->status, self::CLOSED_STATUSES, true)
                 && $this->due_date !== null
                 && $this->due_date->lt(today())
         );
@@ -98,41 +147,33 @@ class Loan extends Model implements AuthenticatableContract
     }
 
     /**
-     * The total interest owed over the loan's term, spread evenly across each
-     * day from start_date up to today (capped at due_date). This is a display
-     * breakdown only — it doesn't change `interest_amount`/`balance`, which
-     * still assume the full interest is owed from day one.
+     * One entry per day the loan has been open, from start_date up to today
+     * (or the day it closed, if it already has) — each worth the same flat
+     * daily amount. This is what `interest_amount`/`balance` are built from,
+     * not a separate display-only estimate.
      */
     public function dailyInterestEntries(): array
     {
-        if (! $this->start_date || ! $this->due_date) {
+        $cutoff = $this->accrualCutoff();
+        if (! $cutoff) {
             return [];
         }
 
-        $start = $this->start_date->copy()->startOfDay();
-        $termEnd = $this->due_date->copy()->startOfDay();
-        $cutoff = $termEnd->lt(today()) ? $termEnd : today();
-
-        $totalDays = max(1, $start->diffInDays($termEnd) + 1);
-        $dailyAmount = round($this->interest_amount / $totalDays, 2);
-
+        $dailyAmount = $this->dailyInterestAmount();
         $entries = [];
+        $cursor = $this->start_date->copy()->startOfDay();
+        $day = 1;
 
-        if ($cutoff->gte($start)) {
-            $cursor = $start->copy();
-            $day = 1;
-
-            while ($cursor->lte($cutoff)) {
-                $entries[] = [
-                    'type' => 'interest',
-                    'date' => $cursor->toDateString(),
-                    'day' => $day,
-                    'amount' => $dailyAmount,
-                    'note' => "Day {$day} interest",
-                ];
-                $cursor->addDay();
-                $day++;
-            }
+        while ($cursor->lte($cutoff)) {
+            $entries[] = [
+                'type' => 'interest',
+                'date' => $cursor->toDateString(),
+                'day' => $day,
+                'amount' => $dailyAmount,
+                'note' => "Day {$day} interest",
+            ];
+            $cursor->addDay();
+            $day++;
         }
 
         return $entries;
