@@ -56,6 +56,7 @@ Route::middleware(['auth:sanctum', 'staff', 'role:admin'])->group(function () {
     Route::get('/loans/{loan}/history', [LoansController::class, 'history']);
     Route::post('/loans/{loan}/notify', [NotificationController::class, 'notify']);
     Route::post('/loans/notify-due', [NotificationController::class, 'notifyAllDue']);
+    Route::post('/loans/{loan}/sms', [NotificationController::class, 'sendCustom']);
 
     Route::put('/settings/payment', [SettingsController::class, 'updatePaymentInfo']);
 

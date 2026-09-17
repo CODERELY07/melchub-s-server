@@ -4,13 +4,20 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Loan;
+use App\Services\SmsGatewayService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
+use Throwable;
 
 class BorrowerAuthController extends Controller
 {
+    public function __construct(private SmsGatewayService $sms)
+    {
+    }
+
     public function login(Request $request)
     {
         $credentials = $request->validate([
@@ -100,6 +107,7 @@ class BorrowerAuthController extends Controller
     public function acceptTerms(Request $request)
     {
         $loan = $request->user();
+        $alreadyAccepted = $loan->terms_accepted_at !== null;
 
         $validated = $request->validate([
             'signature_name' => 'required|string|max:255',
@@ -112,6 +120,31 @@ class BorrowerAuthController extends Controller
             'terms_signature_name' => $validated['signature_name'],
         ])->save();
 
+        // Only the very first acceptance is a "welcome" moment — guards
+        // against sending it again if this endpoint is ever hit twice (the
+        // frontend only shows the prompt while terms_accepted_at is null,
+        // but the API itself doesn't otherwise stop a second call).
+        if (! $alreadyAccepted && $loan->phone) {
+            $this->sendWelcomeSms($loan);
+        }
+
         return response()->json($loan->fresh());
+    }
+
+    /**
+     * Best-effort — a failed SMS must never undo or block the terms
+     * acceptance that already succeeded above.
+     */
+    private function sendWelcomeSms(Loan $loan): void
+    {
+        $message = "Hi {$loan->name}, welcome to MELCHUB! Your loan of ₱".number_format((float) $loan->total_loan, 2)
+            ." is now active, starting {$loan->start_date->format('M d, Y')} and due on {$loan->due_date->format('M d, Y')}. "
+            .'Thank you for your trust — we\'re glad to have you with us and wish you all the best!';
+
+        try {
+            $this->sms->send($loan->phone, $message);
+        } catch (Throwable $e) {
+            Log::warning("Failed to send welcome SMS for loan {$loan->id}: {$e->getMessage()}");
+        }
     }
 }

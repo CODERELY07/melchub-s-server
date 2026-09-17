@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Loan;
 use App\Models\Setting;
 use App\Services\SmsGatewayService;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
 use Throwable;
@@ -13,6 +14,34 @@ class NotificationController extends Controller
 {
     public function __construct(private SmsGatewayService $sms)
     {
+    }
+
+    /**
+     * Send an admin-authored, free-form SMS to a single borrower — no
+     * due-date logic, no fee/status side effects, just whatever the admin
+     * typed. Separate from notify() below, which composes its own message
+     * text and can mutate the loan (late fee, due date) as a consequence of
+     * sending it.
+     */
+    public function sendCustom(Request $request, Loan $loan)
+    {
+        if (! $loan->phone) {
+            return response()->json(['message' => 'This loan has no phone number on file.'], 422);
+        }
+
+        $validated = $request->validate([
+            'message' => 'required|string|max:640',
+        ]);
+
+        try {
+            $this->sms->send($loan->phone, $validated['message']);
+        } catch (RuntimeException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        }
+
+        $loan->forceFill(['last_notified_at' => now()])->save();
+
+        return response()->json(['message' => 'Sent', 'loan' => $loan->fresh()]);
     }
 
     /**
