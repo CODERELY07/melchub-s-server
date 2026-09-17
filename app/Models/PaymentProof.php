@@ -9,8 +9,8 @@ class PaymentProof extends Model
     protected $fillable = [
         'loan_id',
         'amount',
-        'drive_file_id',
-        'drive_file_url',
+        'file_path',
+        'file_url',
         'status',
         'note',
         'reviewed_by',

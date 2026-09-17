@@ -42,13 +42,15 @@ return [
         'sim_number' => env('SMS_GATEWAY_SIM_NUMBER'),
     ],
 
-    'google_drive' => [
-        // Either the raw JSON of the service account key file (handy for
-        // hosts like Render where uploading a file is awkward)...
-        'credentials_json' => env('GOOGLE_DRIVE_CREDENTIALS_JSON'),
-        // ...or a path to it on disk (handy for local development).
-        'credentials_path' => env('GOOGLE_DRIVE_CREDENTIALS_PATH'),
-        'folder_id' => env('GOOGLE_DRIVE_FOLDER_ID'),
+    'supabase_storage' => [
+        // Project URL, e.g. https://xxxxxxxx.supabase.co — from Supabase's
+        // dashboard under Project Settings > API. Not the same as the
+        // Postgres pooler host used for DB_HOST.
+        'url' => env('SUPABASE_URL'),
+        // The *service_role* key (not the anon/public key) — it bypasses
+        // Row Level Security so the server can upload without a user session.
+        'service_role_key' => env('SUPABASE_SERVICE_ROLE_KEY'),
+        'bucket' => env('SUPABASE_STORAGE_BUCKET', 'payment-proofs'),
     ],
 
 ];

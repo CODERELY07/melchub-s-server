@@ -4,8 +4,8 @@ namespace App\Http\Controllers;
 
 use App\Models\Loan;
 use App\Models\PaymentProof;
-use App\Services\GoogleDriveService;
 use App\Services\SmsGatewayService;
+use App\Services\SupabaseStorageService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
@@ -14,7 +14,7 @@ use Throwable;
 class PaymentProofController extends Controller
 {
     public function __construct(
-        private GoogleDriveService $drive,
+        private SupabaseStorageService $storage,
         private SmsGatewayService $sms,
     ) {
     }
@@ -32,7 +32,7 @@ class PaymentProofController extends Controller
         ]);
 
         try {
-            $upload = $this->drive->upload(
+            $upload = $this->storage->upload(
                 $validated['screenshot'],
                 "{$loan->loan_number}-{$loan->username}-".now()->format('Ymd_His').'.'.$validated['screenshot']->extension()
             );
@@ -42,8 +42,8 @@ class PaymentProofController extends Controller
 
         $proof = $loan->paymentProofs()->create([
             'amount' => $validated['amount'],
-            'drive_file_id' => $upload['id'],
-            'drive_file_url' => $upload['url'],
+            'file_path' => $upload['id'],
+            'file_url' => $upload['url'],
             'status' => 'pending',
         ]);
 
