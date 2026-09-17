@@ -45,7 +45,13 @@ class AuthController extends Controller
         }
 
         $user = User::where('username', $request->username)->first();
-        $token = $user->createToken('auth_token')->plainTextToken;
+
+        // "Remember me" controls how long the issued token stays valid, not
+        // just a client-side flag — localStorage already persists across
+        // browser restarts regardless, so the actual expiry has to be
+        // enforced server-side via the token's own expires_at.
+        $expiresAt = $request->boolean('remember') ? now()->addYear() : now()->addDay();
+        $token = $user->createToken('auth_token', ['*'], $expiresAt)->plainTextToken;
 
         return response()->json([
             'message' => 'Login Successfully',

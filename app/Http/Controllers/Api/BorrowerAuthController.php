@@ -16,6 +16,7 @@ class BorrowerAuthController extends Controller
         $credentials = $request->validate([
             'username' => 'required|string',
             'password' => 'required|string',
+            'remember' => 'sometimes|boolean',
         ]);
 
         $loan = Loan::where('username', $credentials['username'])->first();
@@ -26,7 +27,10 @@ class BorrowerAuthController extends Controller
             ]);
         }
 
-        $token = $loan->createToken('borrower_token')->plainTextToken;
+        // Same reasoning as the staff login (Api\AuthController::login()): the
+        // expiry has to be enforced server-side via the token itself.
+        $expiresAt = $request->boolean('remember') ? now()->addYear() : now()->addDay();
+        $token = $loan->createToken('borrower_token', ['*'], $expiresAt)->plainTextToken;
 
         return response()->json([
             'token' => $token,
