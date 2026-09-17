@@ -95,19 +95,12 @@ class LoansController extends Controller
             'paid_at' => 'sometimes|date',
         ]);
 
-        $payment = $loan->payments()->create([
-            'amount' => $validated['amount'],
-            'note' => $validated['note'] ?? null,
-            'paid_at' => $validated['paid_at'] ?? today(),
-            'recorded_by' => $request->user()->id,
-        ]);
-
-        $loan->increment('total_paid', $validated['amount']);
-        $loan->refresh();
-
-        if ($loan->balance <= 0 && ! in_array($loan->status, Loan::CLOSED_STATUSES, true)) {
-            $loan->update(['status' => 'paid']);
-        }
+        $payment = $loan->recordPayment(
+            (float) $validated['amount'],
+            $validated['note'] ?? null,
+            $request->user()->id,
+            isset($validated['paid_at']) ? \Illuminate\Support\Carbon::parse($validated['paid_at']) : null
+        );
 
         return response()->json([
             'loan' => $loan->fresh(),

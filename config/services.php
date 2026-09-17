@@ -35,4 +35,20 @@ return [
         ],
     ],
 
+    'sms_gateway' => [
+        'base_url' => env('SMS_GATEWAY_BASE_URL', 'https://api.sms-gate.app/3rdparty/v1'),
+        'username' => env('SMS_GATEWAY_USERNAME'),
+        'password' => env('SMS_GATEWAY_PASSWORD'),
+        'sim_number' => env('SMS_GATEWAY_SIM_NUMBER'),
+    ],
+
+    'google_drive' => [
+        // Either the raw JSON of the service account key file (handy for
+        // hosts like Render where uploading a file is awkward)...
+        'credentials_json' => env('GOOGLE_DRIVE_CREDENTIALS_JSON'),
+        // ...or a path to it on disk (handy for local development).
+        'credentials_path' => env('GOOGLE_DRIVE_CREDENTIALS_PATH'),
+        'folder_id' => env('GOOGLE_DRIVE_FOLDER_ID'),
+    ],
+
 ];

@@ -87,4 +87,27 @@ class BorrowerAuthController extends Controller
     {
         return response()->json($request->user()->history());
     }
+
+    /**
+     * Records acceptance of the terms & conditions, with the borrower's
+     * typed full name standing as their e-signature. One-time — the portal
+     * only shows the prompt while terms_accepted_at is still null.
+     */
+    public function acceptTerms(Request $request)
+    {
+        $loan = $request->user();
+
+        $validated = $request->validate([
+            'signature_name' => 'required|string|max:255',
+        ]);
+
+        // Deliberately not in $fillable (borrowers shouldn't be able to set
+        // these via updateProfile), so bypass the guard for this one write.
+        $loan->forceFill([
+            'terms_accepted_at' => now(),
+            'terms_signature_name' => $validated['signature_name'],
+        ])->save();
+
+        return response()->json($loan->fresh());
+    }
 }

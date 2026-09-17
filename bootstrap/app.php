@@ -16,6 +16,12 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->statefulApi();
         $middleware->preventRequestForgery(allowSameSite: true);
 
+        // This app is API-only and has no named "login" route. Laravel's
+        // framework default otherwise redirects unauthenticated guests to
+        // route('login'), which crashes with a RouteNotFoundException for
+        // any request that doesn't explicitly send Accept: application/json.
+        $middleware->redirectGuestsTo(fn () => null);
+
         $middleware->alias([
             'role' => \Spatie\Permission\Middleware\RoleMiddleware::class,
             'permission' => \Spatie\Permission\Middleware\PermissionMiddleware::class,

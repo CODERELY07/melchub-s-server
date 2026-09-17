@@ -27,7 +27,12 @@ class LoanPayment extends Model
         return $this->belongsTo(Loan::class);
     }
 
-    public function recordedBy()
+    /**
+     * Deliberately not named recordedBy() — that would serialize to the JSON
+     * key "recorded_by", silently shadowing the raw recorded_by FK column
+     * whenever this relation is eager-loaded.
+     */
+    public function recorder()
     {
         return $this->belongsTo(User::class, 'recorded_by');
     }
