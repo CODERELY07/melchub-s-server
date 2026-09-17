@@ -23,7 +23,7 @@ class SmsGatewayService
         }
 
         $payload = [
-            'phoneNumbers' => [$phoneNumber],
+            'phoneNumbers' => [$this->normalizePhoneNumber($phoneNumber)],
             'textMessage' => ['text' => $text],
             'withDeliveryReport' => false,
         ];
@@ -41,5 +41,32 @@ class SmsGatewayService
                 "SMS gateway request failed ({$response->status()}): {$response->body()}"
             );
         }
+    }
+
+    /**
+     * Every phone number in this app is entered by staff as a plain local PH
+     * mobile number (e.g. "09937538849" — see Loan::$fillable's unvalidated
+     * `phone` field), but the gateway's cloud relay rejects anything that
+     * isn't full E.164 with a country code ("invalid phone number"). Rather
+     * than force every admin to remember to type +63 in a free-text field,
+     * this normalizes at the one place all outgoing SMS already pass through.
+     */
+    private function normalizePhoneNumber(string $phoneNumber): string
+    {
+        $digits = preg_replace('/[^\d+]/', '', $phoneNumber);
+
+        if (str_starts_with($digits, '+')) {
+            return $digits;
+        }
+
+        if (str_starts_with($digits, '63')) {
+            return "+{$digits}";
+        }
+
+        if (str_starts_with($digits, '0')) {
+            return '+63'.substr($digits, 1);
+        }
+
+        return "+63{$digits}";
     }
 }
