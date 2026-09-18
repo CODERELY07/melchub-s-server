@@ -166,6 +166,11 @@ class Loan extends Model implements AuthenticatableContract
         return $this->hasMany(PaymentProof::class);
     }
 
+    public function smsLogs()
+    {
+        return $this->hasMany(SmsLog::class);
+    }
+
     /**
      * The single place a payment gets logged and reflected on the loan —
      * used by both the admin's direct "record payment" action and approving

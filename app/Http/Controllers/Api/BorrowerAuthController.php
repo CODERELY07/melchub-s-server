@@ -143,7 +143,7 @@ class BorrowerAuthController extends Controller
             .$this->accountLinkLine();
 
         try {
-            $this->sms->send($loan->phone, $message);
+            $this->sms->send($loan->phone, $message, $loan->id);
         } catch (Throwable $e) {
             Log::warning("Failed to send welcome SMS for loan {$loan->id}: {$e->getMessage()}");
         }

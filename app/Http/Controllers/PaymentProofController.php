@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Loan;
 use App\Models\PaymentProof;
+use App\Models\Setting;
 use App\Services\SmsGatewayService;
 use App\Services\SupabaseStorageService;
 use Illuminate\Http\Request;
@@ -46,6 +47,8 @@ class PaymentProofController extends Controller
             'file_url' => $upload['url'],
             'status' => 'pending',
         ]);
+
+        $this->tryNotifyAdminOfNewProof($loan, $proof);
 
         return response()->json($proof, 201);
     }
@@ -150,9 +153,38 @@ class PaymentProofController extends Controller
         }
 
         try {
-            $this->sms->send($loan->phone, $message());
+            $this->sms->send($loan->phone, $message(), $loan->id);
         } catch (Throwable $e) {
             Log::warning("Failed to send payment-review SMS for loan {$loan->id}: {$e->getMessage()}");
+        }
+    }
+
+    /**
+     * Lets an admin know a new proof is waiting on review without having to
+     * keep the Payment Proofs page open — best-effort and silent if no
+     * notification phone is configured (Settings), matching every other
+     * SMS side effect in this app. Deliberately not tied to $loan->id in the
+     * SmsLog audit trail (Part of sms-and-payments.md Step 2b) since the
+     * recipient here is staff, not that loan's borrower.
+     */
+    private function tryNotifyAdminOfNewProof(Loan $loan, PaymentProof $proof): void
+    {
+        $adminPhone = Setting::get('admin_notify_phone');
+        if (! $adminPhone) {
+            return;
+        }
+
+        $frontendUrl = rtrim((string) config('services.frontend_url'), '/');
+        $link = $frontendUrl ? " Review it: {$frontendUrl}/admin/payment-proofs" : '';
+
+        try {
+            $this->sms->send(
+                $adminPhone,
+                "New payment proof from {$loan->name} (loan {$loan->loan_number}) for ₱"
+                    .number_format((float) $proof->amount, 2).'.'.$link
+            );
+        } catch (Throwable $e) {
+            Log::warning("Failed to send new-payment-proof admin alert for proof {$proof->id}: {$e->getMessage()}");
         }
     }
 }

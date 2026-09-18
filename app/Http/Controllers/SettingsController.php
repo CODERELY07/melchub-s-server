@@ -37,4 +37,31 @@ class SettingsController extends Controller
             'gcash_number' => $validated['gcash_number'],
         ]);
     }
+
+    /**
+     * Admin-only, and deliberately a separate endpoint from paymentInfo()
+     * above rather than folded into the same settings object — this phone
+     * number is where new-payment-proof alerts go (PaymentProofController)
+     * and has no reason to be readable by borrower tokens the way the GCash
+     * account does.
+     */
+    public function notifications()
+    {
+        return response()->json([
+            'admin_notify_phone' => Setting::get('admin_notify_phone', ''),
+        ]);
+    }
+
+    public function updateNotifications(Request $request)
+    {
+        $validated = $request->validate([
+            'admin_notify_phone' => 'nullable|string|max:30',
+        ]);
+
+        Setting::set('admin_notify_phone', $validated['admin_notify_phone'] ?? '');
+
+        return response()->json([
+            'admin_notify_phone' => $validated['admin_notify_phone'] ?? '',
+        ]);
+    }
 }

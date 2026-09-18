@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\SmsLog;
 use Illuminate\Support\Facades\Http;
 use RuntimeException;
 
@@ -12,18 +13,27 @@ use RuntimeException;
  */
 class SmsGatewayService
 {
-    public function send(string $phoneNumber, string $text): void
+    /**
+     * @param  int|null  $loanId  The loan this SMS is about, for the audit
+     *                            trail (SmsLog) — null for sends that aren't
+     *                            tied to a specific borrower, e.g. the
+     *                            new-payment-proof alert sent to the admin.
+     */
+    public function send(string $phoneNumber, string $text, ?int $loanId = null): void
     {
+        $normalized = $this->normalizePhoneNumber($phoneNumber);
         $baseUrl = rtrim((string) config('services.sms_gateway.base_url'), '/');
         $username = config('services.sms_gateway.username');
         $password = config('services.sms_gateway.password');
 
         if (! $baseUrl || ! $username || ! $password) {
-            throw new RuntimeException('SMS gateway is not configured. Set SMS_GATEWAY_* in your .env.');
+            $error = 'SMS gateway is not configured. Set SMS_GATEWAY_* in your .env.';
+            $this->log($loanId, $normalized, $text, false, $error);
+            throw new RuntimeException($error);
         }
 
         $payload = [
-            'phoneNumbers' => [$this->normalizePhoneNumber($phoneNumber)],
+            'phoneNumbers' => [$normalized],
             'textMessage' => ['text' => $text],
             'withDeliveryReport' => false,
         ];
@@ -37,10 +47,30 @@ class SmsGatewayService
             ->post("{$baseUrl}/messages", $payload);
 
         if ($response->failed()) {
-            throw new RuntimeException(
-                "SMS gateway request failed ({$response->status()}): {$response->body()}"
-            );
+            $error = "SMS gateway request failed ({$response->status()}): {$response->body()}";
+            $this->log($loanId, $normalized, $text, false, $error);
+
+            throw new RuntimeException($error);
         }
+
+        $this->log($loanId, $normalized, $text, true, null);
+    }
+
+    /**
+     * Every outgoing SMS attempt, success or failure, in one auditable table
+     * — see docs/sms-and-payments.md for why (answering "did we actually
+     * text them?" during a payment dispute, without needing gateway-side
+     * delivery logs this app doesn't otherwise have access to).
+     */
+    private function log(?int $loanId, string $phone, string $message, bool $success, ?string $error): void
+    {
+        SmsLog::create([
+            'loan_id' => $loanId,
+            'phone' => $phone,
+            'message' => $message,
+            'success' => $success,
+            'error' => $error,
+        ]);
     }
 
     /**

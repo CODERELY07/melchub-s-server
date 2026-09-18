@@ -36,7 +36,7 @@ class NotificationController extends Controller
         $message = $validated['message'].$this->accountLinkLine();
 
         try {
-            $this->sms->send($loan->phone, $message);
+            $this->sms->send($loan->phone, $message, $loan->id);
         } catch (RuntimeException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
         }
@@ -44,6 +44,16 @@ class NotificationController extends Controller
         $loan->forceFill(['last_notified_at' => now()])->save();
 
         return response()->json(['message' => 'Sent', 'loan' => $loan->fresh()]);
+    }
+
+    /**
+     * The full SMS audit trail for one loan — every attempt, success or
+     * failure, newest first. Shown alongside the payment/interest history
+     * in the admin loans table's History modal.
+     */
+    public function smsLog(Loan $loan)
+    {
+        return response()->json($loan->smsLogs()->latest()->get());
     }
 
     /**
@@ -58,7 +68,7 @@ class NotificationController extends Controller
         ['text' => $message, 'apply' => $apply] = $this->composeMessage($loan);
 
         try {
-            $this->sms->send($loan->phone, $message);
+            $this->sms->send($loan->phone, $message, $loan->id);
         } catch (RuntimeException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
         }
@@ -89,7 +99,7 @@ class NotificationController extends Controller
         foreach ($loans as $loan) {
             try {
                 ['text' => $message, 'apply' => $apply] = $this->composeMessage($loan);
-                $this->sms->send($loan->phone, $message);
+                $this->sms->send($loan->phone, $message, $loan->id);
 
                 if ($apply) {
                     $apply();

@@ -10,10 +10,13 @@ use App\Http\Controllers\SettingsController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
-Route::post('/login', [AuthController::class, 'login']);
-Route::post('/register', [AuthController::class, 'register']);
+// throttle:6,1 — 6 attempts/minute per IP, to slow down credential
+// stuffing/brute-force against the two login forms (and the otherwise-open
+// registration endpoint below, which has no auth gate of its own).
+Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:6,1');
+Route::post('/register', [AuthController::class, 'register'])->middleware('throttle:6,1');
 
-Route::post('/borrower/login', [BorrowerAuthController::class, 'login']);
+Route::post('/borrower/login', [BorrowerAuthController::class, 'login'])->middleware('throttle:6,1');
 
 Route::middleware(['auth:sanctum', 'borrower'])->prefix('borrower')->group(function () {
     Route::post('/logout', [BorrowerAuthController::class, 'logout']);
@@ -57,8 +60,11 @@ Route::middleware(['auth:sanctum', 'staff', 'role:admin'])->group(function () {
     Route::post('/loans/{loan}/notify', [NotificationController::class, 'notify']);
     Route::post('/loans/notify-due', [NotificationController::class, 'notifyAllDue']);
     Route::post('/loans/{loan}/sms', [NotificationController::class, 'sendCustom']);
+    Route::get('/loans/{loan}/sms-log', [NotificationController::class, 'smsLog']);
 
     Route::put('/settings/payment', [SettingsController::class, 'updatePaymentInfo']);
+    Route::get('/settings/notifications', [SettingsController::class, 'notifications']);
+    Route::put('/settings/notifications', [SettingsController::class, 'updateNotifications']);
 
     Route::get('/payment-proofs', [PaymentProofController::class, 'index']);
     Route::post('/payment-proofs/{paymentProof}/approve', [PaymentProofController::class, 'approve']);
