@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\BorrowerAuthController;
 use App\Http\Controllers\AnalyticsController;
+use App\Http\Controllers\LoanRequestController;
 use App\Http\Controllers\LoansController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\PaymentProofController;
@@ -11,10 +12,8 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
 // throttle:6,1 — 6 attempts/minute per IP, to slow down credential
-// stuffing/brute-force against the two login forms (and the otherwise-open
-// registration endpoint below, which has no auth gate of its own).
+// stuffing/brute-force against the two login forms.
 Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:6,1');
-Route::post('/register', [AuthController::class, 'register'])->middleware('throttle:6,1');
 
 Route::post('/borrower/login', [BorrowerAuthController::class, 'login'])->middleware('throttle:6,1');
 
@@ -27,6 +26,8 @@ Route::middleware(['auth:sanctum', 'borrower'])->prefix('borrower')->group(funct
     Route::post('/accept-terms', [BorrowerAuthController::class, 'acceptTerms']);
     Route::post('/payment-proofs', [PaymentProofController::class, 'store']);
     Route::get('/payment-proofs', [PaymentProofController::class, 'mine']);
+    Route::post('/loan-requests', [LoanRequestController::class, 'store']);
+    Route::get('/loan-requests', [LoanRequestController::class, 'mine']);
 });
 
 Route::middleware(['auth:sanctum', 'staff'])->group(function () {
@@ -54,6 +55,10 @@ Route::middleware('auth:sanctum')->group(function () {
 });
 
 Route::middleware(['auth:sanctum', 'staff', 'role:admin'])->group(function () {
+    // Was public/unauthenticated — anyone on the internet could create a
+    // staff account. Now only an existing admin can create another one.
+    Route::post('/register', [AuthController::class, 'register']);
+
     Route::apiResource('loans', LoansController::class);
     Route::post('/loans/{loan}/payments', [LoansController::class, 'recordPayment']);
     Route::get('/loans/{loan}/history', [LoansController::class, 'history']);
@@ -69,6 +74,10 @@ Route::middleware(['auth:sanctum', 'staff', 'role:admin'])->group(function () {
     Route::get('/payment-proofs', [PaymentProofController::class, 'index']);
     Route::post('/payment-proofs/{paymentProof}/approve', [PaymentProofController::class, 'approve']);
     Route::post('/payment-proofs/{paymentProof}/reject', [PaymentProofController::class, 'reject']);
+
+    Route::get('/loan-requests', [LoanRequestController::class, 'index']);
+    Route::post('/loan-requests/{loanRequest}/accept', [LoanRequestController::class, 'accept']);
+    Route::post('/loan-requests/{loanRequest}/decline', [LoanRequestController::class, 'decline']);
 
     Route::get('/analytics', [AnalyticsController::class, 'index']);
 });
