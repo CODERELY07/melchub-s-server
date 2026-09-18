@@ -45,7 +45,11 @@ class LoansController extends Controller
 
         $loan = Loan::create($validated);
 
-        return response()->json($loan, 201);
+        // Fields not sent (e.g. total_loan/status when created via "Add
+        // Client" with no loan terms yet) get their value from the DB
+        // default, which the in-memory $loan from create() won't reflect
+        // until re-fetched.
+        return response()->json($loan->fresh(), 201);
     }
 
     /**
@@ -117,6 +121,18 @@ class LoansController extends Controller
         return response()->json($loan->history());
     }
 
+    /**
+     * total_loan/start_date/due_date used to be `required` — every loan had
+     * to have its terms set the moment the account was created. They're now
+     * `sometimes` (total_loan) / `sometimes|nullable` (the dates) instead,
+     * so the "Add Client" page (client/app/admin/clients/new/page.tsx) can
+     * create a bare account with no loan terms yet, leaving those for the
+     * admin to fill in later via this same endpoint's PUT. This doesn't
+     * change anything for the existing "New loan" modal, which still always
+     * submits all three (they're `required` on that form) — see
+     * docs/loans.md Part 0 for why a loosened-but-unused-by-existing-callers
+     * validation change was preferred over a second, duplicate endpoint.
+     */
     private function validated(Request $request, ?Loan $loan = null): array
     {
         return $request->validate([
@@ -126,13 +142,13 @@ class LoansController extends Controller
             'password' => 'sometimes|nullable|string|min:6',
             'phone' => 'sometimes|nullable|string|max:30',
             'location' => 'sometimes|nullable|string|max:255',
-            'total_loan' => 'required|numeric|min:0',
+            'total_loan' => 'sometimes|numeric|min:0',
             'total_paid' => 'sometimes|numeric|min:0',
             'interest_rate' => 'sometimes|numeric|min:0|max:100',
             'status' => ['sometimes', Rule::in(['pending', 'active', 'paid', 'overdue', 'defaulted', 'cancelled'])],
             'notes' => 'sometimes|nullable|string',
-            'start_date' => 'required|date',
-            'due_date' => 'required|date|after_or_equal:start_date',
+            'start_date' => 'sometimes|nullable|date',
+            'due_date' => 'sometimes|nullable|date|after_or_equal:start_date',
         ]);
     }
 }
