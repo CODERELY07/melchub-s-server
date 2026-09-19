@@ -25,8 +25,10 @@ class Loan extends Model implements AuthenticatableContract
         'phone',
         'location',
         'total_loan',
+        'credit_limit',
         'total_paid',
         'interest_rate',
+        'repayment_plan',
         'status',
         'notes',
         'start_date',
@@ -42,6 +44,7 @@ class Loan extends Model implements AuthenticatableContract
         'interest_amount',
         'balance',
         'is_overdue',
+        'available_credit',
     ];
 
     /**
@@ -49,11 +52,18 @@ class Loan extends Model implements AuthenticatableContract
      */
     public const CLOSED_STATUSES = ['paid', 'cancelled', 'defaulted'];
 
+    /**
+     * Same two options as LoanRequest::plan, but this is what the admin
+     * actually set the loan up with, not what a borrower asked for.
+     */
+    public const REPAYMENT_PLANS = ['3_day', 'weekly'];
+
     protected function casts(): array
     {
         return [
             'password' => 'hashed',
             'total_loan' => 'decimal:2',
+            'credit_limit' => 'decimal:2',
             'total_paid' => 'decimal:2',
             'interest_rate' => 'decimal:2',
             'penalty_amount' => 'decimal:2',
@@ -86,6 +96,11 @@ class Loan extends Model implements AuthenticatableContract
                 $loan->closed_at = null;
             }
         });
+
+        // remainingBudget() depends on every loan's principal and status.
+        static::saved(fn () => self::flushBudgetCache());
+        static::deleted(fn () => self::flushBudgetCache());
+        static::restored(fn () => self::flushBudgetCache());
     }
 
     /**
@@ -144,6 +159,67 @@ class Loan extends Model implements AuthenticatableContract
                 && $this->due_date !== null
                 && $this->due_date->lt(today())
         );
+    }
+
+    /**
+     * How much more this client can borrow: the smaller of (a) their own
+     * credit_limit minus what they already have out, and (b) what's left in
+     * the admin's shared lending budget (Setting: lending_budget). Either cap
+     * may be unset — only the ones that exist apply — and null (not zero)
+     * means neither is configured, so the borrower's request form can tell
+     * "nothing configured" apart from "limit reached." Measured against
+     * total_loan (principal drawn), not balance, so interest/penalties never
+     * eat into anyone's borrowing room.
+     */
+    protected function availableCredit(): Attribute
+    {
+        return Attribute::get(function () {
+            $caps = [];
+
+            if ($this->credit_limit !== null) {
+                $caps[] = ((float) $this->credit_limit) - ((float) $this->total_loan);
+            }
+
+            $pool = self::remainingBudget();
+            if ($pool !== null) {
+                $caps[] = $pool;
+            }
+
+            return $caps === [] ? null : max(0, round(min($caps), 2));
+        });
+    }
+
+    private static ?float $remainingBudgetCache = null;
+
+    private static bool $remainingBudgetCached = false;
+
+    /**
+     * The shared lending pool minus principal currently out on every
+     * non-closed loan, or null if the admin hasn't set a budget. Memoized for
+     * the request (available_credit is appended to every loan in a list, and
+     * this would otherwise be two queries per row); cleared whenever a loan
+     * changes or the budget setting is saved.
+     */
+    public static function remainingBudget(): ?float
+    {
+        if (! self::$remainingBudgetCached) {
+            $budget = Setting::get('lending_budget');
+
+            self::$remainingBudgetCache = ($budget === null || $budget === '')
+                ? null
+                : max(0, round(
+                    (float) $budget - (float) static::query()->whereNotIn('status', self::CLOSED_STATUSES)->sum('total_loan'),
+                    2
+                ));
+            self::$remainingBudgetCached = true;
+        }
+
+        return self::$remainingBudgetCache;
+    }
+
+    public static function flushBudgetCache(): void
+    {
+        self::$remainingBudgetCached = false;
     }
 
     public function creator()

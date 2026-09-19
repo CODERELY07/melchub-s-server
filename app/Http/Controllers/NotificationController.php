@@ -118,7 +118,10 @@ class NotificationController extends Controller
     /**
      * Builds the SMS text for a loan's current due status, and — for an
      * overdue loan not already notified today — an $apply callback that
-     * charges the ₱15 late fee and pushes the due date out a week.
+     * charges the admin-configured late fee (Setting: late_fee_amount,
+     * SettingsController::loanDefaults()) and pushes the due date out by
+     * whatever period this loan's repayment_plan actually is (3 days or a
+     * week — Loan::REPAYMENT_PLANS).
      *
      * Deliberately split from applying the fee: the fee/extension must only
      * take effect once the SMS has actually been sent, so a failed send
@@ -135,6 +138,8 @@ class NotificationController extends Controller
             ? " Please pay via GCash: {$gcashNumber}".($gcashName ? " ({$gcashName})" : '').'.'
             : '';
         $linkLine = $this->accountLinkLine();
+        $is3Day = $loan->repayment_plan === '3_day';
+        $periodLabel = $is3Day ? '3-day period' : 'week';
 
         if (! $loan->due_date) {
             return [
@@ -149,21 +154,23 @@ class NotificationController extends Controller
         if ($loan->due_date->lt(today())) {
             if ($alreadyNotifiedToday) {
                 return [
-                    'text' => "Hi {$loan->name}, your MELCHUB loan {$loan->loan_number} is still LATE. "
+                    'text' => "Hi {$loan->name}, your MELCHUB loan {$loan->loan_number} is still LATE for this {$periodLabel}. "
                         .'Balance due: ₱'.number_format($loan->balance, 2).', due '.$loan->due_date->format('M d, Y').".{$gcashLine}{$linkLine}",
                     'apply' => null,
                 ];
             }
 
-            $newDueDate = $loan->due_date->copy()->addWeek();
-            $projectedBalance = round((float) $loan->balance + 15, 2);
+            $lateFee = (float) Setting::get('late_fee_amount', '50');
+            $newDueDate = $is3Day ? $loan->due_date->copy()->addDays(3) : $loan->due_date->copy()->addWeek();
+            $projectedBalance = round((float) $loan->balance + $lateFee, 2);
 
             return [
                 'text' => "Hi {$loan->name}, your MELCHUB loan {$loan->loan_number} is now LATE. "
-                    .'A ₱15.00 late fee has been added and your due date moved to '.$newDueDate->format('M d, Y').'. '
+                    .'A ₱'.number_format($lateFee, 2).' late fee has been added. '
+                    ."You need to pay for this {$periodLabel} by ".$newDueDate->format('M d, Y').'. '
                     .'New balance: ₱'.number_format($projectedBalance, 2).".{$gcashLine}{$linkLine}",
-                'apply' => function () use ($loan, $newDueDate) {
-                    $loan->chargePenalty(15, 'Late payment fee (auto-applied when notifying an overdue loan)');
+                'apply' => function () use ($loan, $newDueDate, $lateFee) {
+                    $loan->chargePenalty($lateFee, 'Late payment fee (auto-applied when notifying an overdue loan)');
                     $loan->due_date = $newDueDate;
                     $loan->save();
                 },
@@ -172,14 +179,14 @@ class NotificationController extends Controller
 
         if ($loan->due_date->isToday()) {
             return [
-                'text' => "Hi {$loan->name}, your MELCHUB loan {$loan->loan_number} payment of ₱"
+                'text' => "Hi {$loan->name}, your MELCHUB loan {$loan->loan_number} payment for this {$periodLabel} of ₱"
                     .number_format($loan->balance, 2).' is due TODAY ('.$loan->due_date->format('M d, Y').").{$gcashLine}{$linkLine}",
                 'apply' => null,
             ];
         }
 
         return [
-            'text' => "Hi {$loan->name}, reminder: your MELCHUB loan {$loan->loan_number} of ₱"
+            'text' => "Hi {$loan->name}, reminder: your MELCHUB loan {$loan->loan_number} payment for this {$periodLabel} of ₱"
                 .number_format($loan->balance, 2).' is due on '.$loan->due_date->format('M d, Y').".{$gcashLine}{$linkLine}",
             'apply' => null,
         ];

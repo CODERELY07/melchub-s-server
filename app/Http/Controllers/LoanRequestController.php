@@ -22,7 +22,9 @@ class LoanRequestController extends Controller
      * checkbox is checked, but that's UX only; this validation is the real
      * gate, same reasoning as every other client-side check in this app
      * (see docs/rbac.md's note on frontend checks never being the security
-     * boundary).
+     * boundary). `requested_amount` is checked against the loan's own
+     * available_credit (Loan::availableCredit()) for the same reason — the
+     * frontend already disables amounts above it, but that's UX only too.
      */
     public function store(Request $request)
     {
@@ -30,12 +32,26 @@ class LoanRequestController extends Controller
 
         $validated = $request->validate([
             'plan' => 'required|in:3_day,weekly',
+            'requested_amount' => 'required|numeric|min:1',
             'message' => 'sometimes|nullable|string|max:1000',
             'acknowledged' => 'required|accepted',
         ]);
 
+        if ($loan->available_credit === null) {
+            return response()->json([
+                'message' => "Your loan officer hasn't set a borrowing limit for your account yet. Please contact them directly.",
+            ], 422);
+        }
+
+        if ($validated['requested_amount'] > $loan->available_credit) {
+            return response()->json([
+                'message' => 'That amount is more than your available credit of ₱'.number_format((float) $loan->available_credit, 2).'.',
+            ], 422);
+        }
+
         $loanRequest = $loan->loanRequests()->create([
             'plan' => $validated['plan'],
+            'requested_amount' => $validated['requested_amount'],
             'message' => $validated['message'] ?? null,
             'rules_acknowledged_at' => now(),
         ]);
@@ -60,7 +76,7 @@ class LoanRequestController extends Controller
      */
     public function index(Request $request)
     {
-        $query = LoanRequest::with(['loan:id,loan_number,name,phone,status', 'reviewer:id,name'])->latest();
+        $query = LoanRequest::with(['loan:id,loan_number,name,phone,status,total_loan,credit_limit', 'reviewer:id,name'])->latest();
 
         if ($status = $request->input('status')) {
             $query->where('status', $status);
@@ -147,7 +163,8 @@ class LoanRequestController extends Controller
         try {
             $this->sms->send(
                 $adminPhone,
-                "New loan request from {$loan->name} (loan {$loan->loan_number}) — {$planLabel} plan.{$link}"
+                "New loan request from {$loan->name} (loan {$loan->loan_number}) for ₱"
+                    .number_format((float) $loanRequest->requested_amount, 2)." — {$planLabel} plan.{$link}"
             );
         } catch (Throwable $e) {
             Log::warning("Failed to send new-loan-request admin alert for request {$loanRequest->id}: {$e->getMessage()}");

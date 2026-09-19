@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Loan;
 use App\Models\Setting;
 use Illuminate\Http\Request;
 
@@ -62,6 +63,66 @@ class SettingsController extends Controller
 
         return response()->json([
             'admin_notify_phone' => $validated['admin_notify_phone'] ?? '',
+        ]);
+    }
+
+    /**
+     * Admin-only: the shared lending pool. Deliberately not part of
+     * loanDefaults() below, which any borrower token can read — a borrower
+     * only ever sees their own resulting available_credit, never the total
+     * pool or what's left of it.
+     */
+    public function lendingBudget()
+    {
+        return response()->json([
+            'lending_budget' => Setting::get('lending_budget', ''),
+            'remaining_budget' => Loan::remainingBudget(),
+        ]);
+    }
+
+    public function updateLendingBudget(Request $request)
+    {
+        $validated = $request->validate([
+            'lending_budget' => 'nullable|numeric|min:0',
+        ]);
+
+        Setting::set('lending_budget', (string) ($validated['lending_budget'] ?? ''));
+        Loan::flushBudgetCache();
+
+        return response()->json([
+            'lending_budget' => Setting::get('lending_budget', ''),
+            'remaining_budget' => Loan::remainingBudget(),
+        ]);
+    }
+
+    /**
+     * Readable by any authenticated account for the same reason as
+     * paymentInfo() above — a borrower reading this over the borrower API
+     * would just see the same number their own reminder SMS already quotes,
+     * nothing sensitive. The default (50) matches what NotificationController
+     * falls back to if this is somehow never set.
+     */
+    public function loanDefaults()
+    {
+        return response()->json([
+            'late_fee_amount' => Setting::get('late_fee_amount', '50'),
+        ]);
+    }
+
+    /**
+     * Admin-only. A single fee for every loan regardless of repayment_plan —
+     * see docs/loans.md Part 7 for why this isn't per-plan.
+     */
+    public function updateLoanDefaults(Request $request)
+    {
+        $validated = $request->validate([
+            'late_fee_amount' => 'required|numeric|min:0',
+        ]);
+
+        Setting::set('late_fee_amount', (string) $validated['late_fee_amount']);
+
+        return response()->json([
+            'late_fee_amount' => (string) $validated['late_fee_amount'],
         ]);
     }
 }

@@ -49,9 +49,11 @@ Route::middleware(['auth:sanctum', 'staff'])->group(function () {
 });
 
 // Readable by either staff or borrower tokens — both need to know where to
-// send/expect GCash payments.
+// send/expect GCash payments, and a borrower's own reminder SMS already
+// quotes the late fee anyway, so there's nothing sensitive in it either.
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/settings/payment', [SettingsController::class, 'paymentInfo']);
+    Route::get('/settings/loan-defaults', [SettingsController::class, 'loanDefaults']);
 });
 
 Route::middleware(['auth:sanctum', 'staff', 'role:admin'])->group(function () {
@@ -70,6 +72,9 @@ Route::middleware(['auth:sanctum', 'staff', 'role:admin'])->group(function () {
     Route::put('/settings/payment', [SettingsController::class, 'updatePaymentInfo']);
     Route::get('/settings/notifications', [SettingsController::class, 'notifications']);
     Route::put('/settings/notifications', [SettingsController::class, 'updateNotifications']);
+    Route::put('/settings/loan-defaults', [SettingsController::class, 'updateLoanDefaults']);
+    Route::get('/settings/lending-budget', [SettingsController::class, 'lendingBudget']);
+    Route::put('/settings/lending-budget', [SettingsController::class, 'updateLendingBudget']);
 
     Route::get('/payment-proofs', [PaymentProofController::class, 'index']);
     Route::post('/payment-proofs/{paymentProof}/approve', [PaymentProofController::class, 'approve']);

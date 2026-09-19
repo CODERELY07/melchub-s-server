@@ -18,6 +18,7 @@ class LoanRequest extends Model
     protected $fillable = [
         'loan_id',
         'plan',
+        'requested_amount',
         'message',
         'rules_acknowledged_at',
         'status',
@@ -29,6 +30,7 @@ class LoanRequest extends Model
     protected function casts(): array
     {
         return [
+            'requested_amount' => 'decimal:2',
             'rules_acknowledged_at' => 'datetime',
             'reviewed_at' => 'datetime',
         ];
