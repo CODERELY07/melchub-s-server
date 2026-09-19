@@ -151,6 +151,18 @@ class Loan extends Model implements AuthenticatableContract
         );
     }
 
+    /**
+     * Principal still unpaid — what actually counts against a credit limit
+     * or the lending budget. Payments free that money up again; interest and
+     * late fees don't use any of it.
+     */
+    protected function outstandingPrincipal(): Attribute
+    {
+        return Attribute::get(
+            fn () => max(0, round(((float) $this->total_loan) - ((float) $this->total_paid), 2))
+        );
+    }
+
     protected function isOverdue(): Attribute
     {
         return Attribute::get(
@@ -177,7 +189,7 @@ class Loan extends Model implements AuthenticatableContract
             $caps = [];
 
             if ($this->credit_limit !== null) {
-                $caps[] = ((float) $this->credit_limit) - ((float) $this->total_loan);
+                $caps[] = ((float) $this->credit_limit) - $this->outstanding_principal;
             }
 
             $pool = self::remainingBudget();
@@ -194,8 +206,8 @@ class Loan extends Model implements AuthenticatableContract
     private static bool $remainingBudgetCached = false;
 
     /**
-     * The shared lending pool minus principal currently out on every
-     * non-closed loan, or null if the admin hasn't set a budget. Memoized for
+     * The shared lending pool minus unpaid principal (principal minus
+     * payments) still out on every non-closed loan, or null if the admin hasn't set a budget. Memoized for
      * the request (available_credit is appended to every loan in a list, and
      * this would otherwise be two queries per row); cleared whenever a loan
      * changes or the budget setting is saved.
@@ -208,7 +220,10 @@ class Loan extends Model implements AuthenticatableContract
             self::$remainingBudgetCache = ($budget === null || $budget === '')
                 ? null
                 : max(0, round(
-                    (float) $budget - (float) static::query()->whereNotIn('status', self::CLOSED_STATUSES)->sum('total_loan'),
+                    (float) $budget - (float) static::query()
+                        ->whereNotIn('status', self::CLOSED_STATUSES)
+                        ->selectRaw('COALESCE(SUM(CASE WHEN total_loan > total_paid THEN total_loan - total_paid ELSE 0 END), 0) AS outstanding')
+                        ->value('outstanding'),
                     2
                 ));
             self::$remainingBudgetCached = true;

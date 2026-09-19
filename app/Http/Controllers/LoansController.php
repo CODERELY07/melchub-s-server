@@ -43,6 +43,10 @@ class LoansController extends Controller
 
         $validated['created_by'] = $request->user()->id;
 
+        // Newly created clients are active right away, not stuck in the
+        // DB-default 'pending'; an explicit status (New loan form) wins.
+        $validated['status'] ??= 'active';
+
         $loan = Loan::create($validated);
 
         // Fields not sent (e.g. total_loan/status when created via "Add
