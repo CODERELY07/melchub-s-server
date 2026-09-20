@@ -29,6 +29,7 @@ class Loan extends Model implements AuthenticatableContract
         'total_paid',
         'interest_rate',
         'repayment_plan',
+        'installments_enabled',
         'status',
         'notes',
         'start_date',
@@ -45,18 +46,14 @@ class Loan extends Model implements AuthenticatableContract
         'balance',
         'is_overdue',
         'available_credit',
+        'plan_name',
+        'plan_period_days',
     ];
 
     /**
      * Statuses that stop interest from accruing any further.
      */
     public const CLOSED_STATUSES = ['paid', 'cancelled', 'defaulted'];
-
-    /**
-     * Same two options as LoanRequest::plan, but this is what the admin
-     * actually set the loan up with, not what a borrower asked for.
-     */
-    public const REPAYMENT_PLANS = ['3_day', 'weekly'];
 
     protected function casts(): array
     {
@@ -65,6 +62,7 @@ class Loan extends Model implements AuthenticatableContract
             'total_loan' => 'decimal:2',
             'credit_limit' => 'decimal:2',
             'total_paid' => 'decimal:2',
+            'installments_enabled' => 'boolean',
             'interest_rate' => 'decimal:2',
             'penalty_amount' => 'decimal:2',
             'start_date' => 'date',
@@ -161,6 +159,17 @@ class Loan extends Model implements AuthenticatableContract
         return Attribute::get(
             fn () => max(0, round(((float) $this->total_loan) - ((float) $this->total_paid), 2))
         );
+    }
+
+    protected function planName(): Attribute
+    {
+        return Attribute::get(fn () => RepaymentPlan::lookup($this->repayment_plan)?->name);
+    }
+
+    /** Days per installment for this loan's plan (7 if the plan record is gone). */
+    protected function planPeriodDays(): Attribute
+    {
+        return Attribute::get(fn () => RepaymentPlan::lookup($this->repayment_plan)?->period_days ?? 7);
     }
 
     protected function isOverdue(): Attribute

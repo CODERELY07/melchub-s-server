@@ -7,6 +7,7 @@ use App\Http\Controllers\LoanRequestController;
 use App\Http\Controllers\LoansController;
 use App\Http\Controllers\NotificationController;
 use App\Http\Controllers\PaymentProofController;
+use App\Http\Controllers\RepaymentPlanController;
 use App\Http\Controllers\SettingsController;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -54,6 +55,7 @@ Route::middleware(['auth:sanctum', 'staff'])->group(function () {
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/settings/payment', [SettingsController::class, 'paymentInfo']);
     Route::get('/settings/loan-defaults', [SettingsController::class, 'loanDefaults']);
+    Route::get('/repayment-plans', [RepaymentPlanController::class, 'index']);
 });
 
 Route::middleware(['auth:sanctum', 'staff', 'role:admin'])->group(function () {
@@ -83,6 +85,10 @@ Route::middleware(['auth:sanctum', 'staff', 'role:admin'])->group(function () {
     Route::get('/loan-requests', [LoanRequestController::class, 'index']);
     Route::post('/loan-requests/{loanRequest}/accept', [LoanRequestController::class, 'accept']);
     Route::post('/loan-requests/{loanRequest}/decline', [LoanRequestController::class, 'decline']);
+
+    Route::post('/repayment-plans', [RepaymentPlanController::class, 'store']);
+    Route::put('/repayment-plans/{repaymentPlan}', [RepaymentPlanController::class, 'update']);
+    Route::delete('/repayment-plans/{repaymentPlan}', [RepaymentPlanController::class, 'destroy']);
 
     Route::get('/analytics', [AnalyticsController::class, 'index']);
 });

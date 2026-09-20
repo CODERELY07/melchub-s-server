@@ -120,8 +120,9 @@ class NotificationController extends Controller
      * overdue loan not already notified today — an $apply callback that
      * charges the admin-configured late fee (Setting: late_fee_amount,
      * SettingsController::loanDefaults()) and pushes the due date out by
-     * whatever period this loan's repayment_plan actually is (3 days or a
-     * week — Loan::REPAYMENT_PLANS).
+     * whatever period this loan's repayment_plan actually is (RepaymentPlan::period_days,
+     * via Loan::plan_period_days). Loans with installments_enabled off get a
+     * plain reminder and no fee or push-out.
      *
      * Deliberately split from applying the fee: the fee/extension must only
      * take effect once the SMS has actually been sent, so a failed send
@@ -138,8 +139,8 @@ class NotificationController extends Controller
             ? " Please pay via GCash: {$gcashNumber}".($gcashName ? " ({$gcashName})" : '').'.'
             : '';
         $linkLine = $this->accountLinkLine();
-        $is3Day = $loan->repayment_plan === '3_day';
-        $periodLabel = $is3Day ? '3-day period' : 'week';
+        $periodDays = $loan->plan_period_days;
+        $periodLabel = $periodDays === 7 ? 'week' : "{$periodDays}-day period";
 
         if (! $loan->due_date) {
             return [
@@ -151,6 +152,18 @@ class NotificationController extends Controller
 
         $alreadyNotifiedToday = $loan->last_notified_at && $loan->last_notified_at->isToday();
 
+        // Not on installments: one due date, no late fee, no push-out.
+        if (! $loan->installments_enabled) {
+            $balance = number_format($loan->balance, 2);
+            $due = $loan->due_date->format('M d, Y');
+            $verb = $loan->due_date->lt(today()) ? 'was due on' : ($loan->due_date->isToday() ? 'is due TODAY,' : 'is due on');
+
+            return [
+                'text' => "Hi {$loan->name}, reminder: your MELCHUB loan {$loan->loan_number} balance of ₱{$balance} {$verb} {$due}.{$gcashLine}{$linkLine}",
+                'apply' => null,
+            ];
+        }
+
         if ($loan->due_date->lt(today())) {
             if ($alreadyNotifiedToday) {
                 return [
@@ -161,7 +174,7 @@ class NotificationController extends Controller
             }
 
             $lateFee = (float) Setting::get('late_fee_amount', '50');
-            $newDueDate = $is3Day ? $loan->due_date->copy()->addDays(3) : $loan->due_date->copy()->addWeek();
+            $newDueDate = $loan->due_date->copy()->addDays($periodDays);
             $projectedBalance = round((float) $loan->balance + $lateFee, 2);
 
             return [

@@ -31,7 +31,7 @@ class LoanRequestController extends Controller
         $loan = $request->user();
 
         $validated = $request->validate([
-            'plan' => 'required|in:3_day,weekly',
+            'plan' => ['required', \Illuminate\Validation\Rule::exists('repayment_plans', 'key')->where('is_active', true)],
             'requested_amount' => 'required|numeric|min:1',
             'message' => 'sometimes|nullable|string|max:1000',
             'acknowledged' => 'required|accepted',
@@ -156,7 +156,7 @@ class LoanRequestController extends Controller
             return;
         }
 
-        $planLabel = $loanRequest->plan === '3_day' ? '3-day installment' : 'weekly installment';
+        $planLabel = \App\Models\RepaymentPlan::lookup($loanRequest->plan)?->name ?? $loanRequest->plan;
         $frontendUrl = rtrim((string) config('services.frontend_url'), '/');
         $link = $frontendUrl ? " Review it: {$frontendUrl}/admin/loan-requests" : '';
 
@@ -164,7 +164,7 @@ class LoanRequestController extends Controller
             $this->sms->send(
                 $adminPhone,
                 "New loan request from {$loan->name} (loan {$loan->loan_number}) for ₱"
-                    .number_format((float) $loanRequest->requested_amount, 2)." — {$planLabel} plan.{$link}"
+                    .number_format((float) $loanRequest->requested_amount, 2)." — {$planLabel}.{$link}"
             );
         } catch (Throwable $e) {
             Log::warning("Failed to send new-loan-request admin alert for request {$loanRequest->id}: {$e->getMessage()}");
