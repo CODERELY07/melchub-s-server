@@ -33,7 +33,7 @@ class NotificationController extends Controller
             'message' => 'required|string|max:640',
         ]);
 
-        $message = $validated['message'].$this->accountLinkLine();
+        $message = $validated['message'];
 
         try {
             $this->sms->send($loan->phone, $message, $loan->id);
@@ -139,14 +139,13 @@ class NotificationController extends Controller
         $gcashLine = $gcashNumber
             ? " Please pay via GCash: {$gcashNumber}".($gcashName ? " ({$gcashName})" : '').'.'
             : '';
-        $linkLine = $this->accountLinkLine();
         $periodDays = $loan->plan_period_days;
         $periodLabel = $periodDays === 7 ? 'week' : "{$periodDays}-day period";
 
         if (! $loan->due_date) {
             return [
                 'text' => "Hi {$loan->name}, this is a reminder from MELCHUB about your loan {$loan->loan_number}. "
-                    .'Current balance: ₱'.number_format($loan->balance, 2).".{$gcashLine}{$linkLine}",
+                    .'Current balance: ₱'.number_format($loan->balance, 2).".{$gcashLine}",
                 'apply' => null,
             ];
         }
@@ -160,7 +159,7 @@ class NotificationController extends Controller
             $verb = $loan->due_date->lt(today()) ? 'was due on' : ($loan->due_date->isToday() ? 'is due TODAY,' : 'is due on');
 
             return [
-                'text' => "Hi {$loan->name}, reminder: your MELCHUB loan {$loan->loan_number} balance of ₱{$balance} {$verb} {$due}.{$gcashLine}{$linkLine}",
+                'text' => "Hi {$loan->name}, reminder: your MELCHUB loan {$loan->loan_number} balance of ₱{$balance} {$verb} {$due}.{$gcashLine}",
                 'apply' => null,
             ];
         }
@@ -169,7 +168,7 @@ class NotificationController extends Controller
             if ($alreadyNotifiedToday) {
                 return [
                     'text' => "Hi {$loan->name}, your MELCHUB loan {$loan->loan_number} is still LATE for this {$periodLabel}. "
-                        .'Balance due: ₱'.number_format($loan->balance, 2).', due '.$loan->due_date->format('M d, Y').".{$gcashLine}{$linkLine}",
+                        .'Balance due: ₱'.number_format($loan->balance, 2).', due '.$loan->due_date->format('M d, Y').".{$gcashLine}",
                     'apply' => null,
                 ];
             }
@@ -182,7 +181,7 @@ class NotificationController extends Controller
                 'text' => "Hi {$loan->name}, your MELCHUB loan {$loan->loan_number} is now LATE. "
                     .'A ₱'.number_format($lateFee, 2).' late fee has been added. '
                     ."You need to pay for this {$periodLabel} by ".$newDueDate->format('M d, Y').'. '
-                    .'New balance: ₱'.number_format($projectedBalance, 2).".{$gcashLine}{$linkLine}",
+                    .'New balance: ₱'.number_format($projectedBalance, 2).".{$gcashLine}",
                 'apply' => function () use ($loan, $newDueDate, $lateFee) {
                     $loan->chargePenalty($lateFee, 'Late payment fee (auto-applied when notifying an overdue loan)');
                     $loan->due_date = $newDueDate;
@@ -194,31 +193,16 @@ class NotificationController extends Controller
         if ($loan->due_date->isToday()) {
             return [
                 'text' => "Hi {$loan->name}, your MELCHUB loan {$loan->loan_number} payment for this {$periodLabel} of ₱"
-                    .number_format($loan->balance, 2).' is due TODAY ('.$loan->due_date->format('M d, Y').").{$gcashLine}{$linkLine}",
+                    .number_format($loan->balance, 2).' is due TODAY ('.$loan->due_date->format('M d, Y').").{$gcashLine}",
                 'apply' => null,
             ];
         }
 
         return [
             'text' => "Hi {$loan->name}, reminder: your MELCHUB loan {$loan->loan_number} payment for this {$periodLabel} of ₱"
-                .number_format($loan->balance, 2).' is due on '.$loan->due_date->format('M d, Y').".{$gcashLine}{$linkLine}",
+                .number_format($loan->balance, 2).' is due on '.$loan->due_date->format('M d, Y').".{$gcashLine}",
             'apply' => null,
         ];
     }
 
-    /**
-     * " View your account: https://..." (or "" if FRONTEND_URL is unset) —
-     * shared by composeMessage() and sendCustom() so every outgoing SMS,
-     * whether auto-composed or admin-typed, ends with a tappable link to the
-     * site. Root "/" there already redirects to the right place for whoever
-     * opens it (see client/app/page.tsx), and on Android with the PWA
-     * installed, the OS may open it in the installed app instead of a
-     * browser tab.
-     */
-    private function accountLinkLine(): string
-    {
-        $url = rtrim((string) config('services.frontend_url'), '/');
-
-        return $url ? " View your account: {$url}" : '';
-    }
 }

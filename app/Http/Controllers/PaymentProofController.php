@@ -188,14 +188,11 @@ class PaymentProofController extends Controller
             return;
         }
 
-        $frontendUrl = rtrim((string) config('services.frontend_url'), '/');
-        $link = $frontendUrl ? " Review it: {$frontendUrl}/admin/payment-proofs" : '';
-
         try {
             $this->sms->send(
                 $adminPhone,
                 "New payment proof from {$loan->name} (loan {$loan->loan_number}) for ₱"
-                    .number_format((float) $proof->amount, 2).'.'.$link
+                    .number_format((float) $proof->amount, 2).'.'
             );
         } catch (Throwable $e) {
             Log::warning("Failed to send new-payment-proof admin alert for proof {$proof->id}: {$e->getMessage()}");

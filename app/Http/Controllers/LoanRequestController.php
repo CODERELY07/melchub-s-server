@@ -157,14 +157,12 @@ class LoanRequestController extends Controller
         }
 
         $planLabel = \App\Models\RepaymentPlan::lookup($loanRequest->plan)?->name ?? $loanRequest->plan;
-        $frontendUrl = rtrim((string) config('services.frontend_url'), '/');
-        $link = $frontendUrl ? " Review it: {$frontendUrl}/admin/loan-requests" : '';
 
         try {
             $this->sms->send(
                 $adminPhone,
                 "New loan request from {$borrower->name} (@{$borrower->username}) for ₱"
-                    .number_format((float) $loanRequest->requested_amount, 2)." — {$planLabel}.{$link}"
+                    .number_format((float) $loanRequest->requested_amount, 2)." — {$planLabel}."
             );
         } catch (Throwable $e) {
             Log::warning("Failed to send new-loan-request admin alert for request {$loanRequest->id}: {$e->getMessage()}");
