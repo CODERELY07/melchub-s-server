@@ -2,7 +2,7 @@
 
 namespace App\Http\Controllers;
 
-use App\Models\Loan;
+use App\Models\Borrower;
 use App\Models\LoanRequest;
 use App\Models\Setting;
 use App\Services\SmsGatewayService;
@@ -22,13 +22,14 @@ class LoanRequestController extends Controller
      * checkbox is checked, but that's UX only; this validation is the real
      * gate, same reasoning as every other client-side check in this app
      * (see docs/rbac.md's note on frontend checks never being the security
-     * boundary). `requested_amount` is checked against the loan's own
-     * available_credit (Loan::availableCredit()) for the same reason — the
-     * frontend already disables amounts above it, but that's UX only too.
+     * boundary). `requested_amount` is checked against the borrower's own
+     * available_credit (Borrower::availableCredit(), summed across all
+     * their loans) for the same reason — the frontend already disables
+     * amounts above it, but that's UX only too.
      */
     public function store(Request $request)
     {
-        $loan = $request->user();
+        $borrower = $request->user();
 
         $validated = $request->validate([
             'plan' => ['required', \Illuminate\Validation\Rule::exists('repayment_plans', 'key')->where('is_active', true)],
@@ -37,26 +38,26 @@ class LoanRequestController extends Controller
             'acknowledged' => 'required|accepted',
         ]);
 
-        if ($loan->available_credit === null) {
+        if ($borrower->available_credit === null) {
             return response()->json([
                 'message' => "Your loan officer hasn't set a borrowing limit for your account yet. Please contact them directly.",
             ], 422);
         }
 
-        if ($validated['requested_amount'] > $loan->available_credit) {
+        if ($validated['requested_amount'] > $borrower->available_credit) {
             return response()->json([
-                'message' => 'That amount is more than your available credit of ₱'.number_format((float) $loan->available_credit, 2).'.',
+                'message' => 'That amount is more than your available credit of ₱'.number_format((float) $borrower->available_credit, 2).'.',
             ], 422);
         }
 
-        $loanRequest = $loan->loanRequests()->create([
+        $loanRequest = $borrower->loanRequests()->create([
             'plan' => $validated['plan'],
             'requested_amount' => $validated['requested_amount'],
             'message' => $validated['message'] ?? null,
             'rules_acknowledged_at' => now(),
         ]);
 
-        $this->tryNotifyAdmin($loan, $loanRequest);
+        $this->tryNotifyAdmin($borrower, $loanRequest);
 
         return response()->json($loanRequest, 201);
     }
@@ -76,7 +77,7 @@ class LoanRequestController extends Controller
      */
     public function index(Request $request)
     {
-        $query = LoanRequest::with(['loan:id,loan_number,name,phone,status,total_loan,credit_limit', 'reviewer:id,name'])->latest();
+        $query = LoanRequest::with(['borrower:id,name,username,phone,credit_limit', 'reviewer:id,name'])->latest();
 
         if ($status = $request->input('status')) {
             $query->where('status', $status);
@@ -87,10 +88,10 @@ class LoanRequestController extends Controller
 
     /**
      * Admin: acknowledge the request as handled. Deliberately does NOT touch
-     * the loan's own fields — the admin still sets the real principal,
-     * interest rate, and dates via the existing Loans page/"Edit loan"
-     * modal, exactly as before this feature existed (see docs/loans.md
-     * Part 7 for why this was kept this simple).
+     * any Loan — the admin creates the actual loan (with a real principal,
+     * interest rate, and dates) via the Loans page's "New loan" button for
+     * this borrower, exactly as before this feature existed (see
+     * docs/loans.md Part 7 for why this was kept this simple).
      */
     public function accept(Request $request, LoanRequest $loanRequest)
     {
@@ -104,7 +105,7 @@ class LoanRequestController extends Controller
             'reviewed_at' => now(),
         ]);
 
-        return response()->json($loanRequest->fresh(['loan', 'reviewer']));
+        return response()->json($loanRequest->fresh(['borrower', 'reviewer']));
     }
 
     /**
@@ -128,20 +129,19 @@ class LoanRequestController extends Controller
             'reviewed_at' => now(),
         ]);
 
-        $loan = $loanRequest->loan;
-        if ($loan->phone) {
+        $borrower = $loanRequest->borrower;
+        if ($borrower->phone) {
             try {
                 $this->sms->send(
-                    $loan->phone,
-                    "Hi {$loan->name}, your loan request wasn't approved: {$validated['note']}",
-                    $loan->id
+                    $borrower->phone,
+                    "Hi {$borrower->name}, your loan request wasn't approved: {$validated['note']}"
                 );
             } catch (Throwable $e) {
                 Log::warning("Failed to send loan-request decline SMS for request {$loanRequest->id}: {$e->getMessage()}");
             }
         }
 
-        return response()->json($loanRequest->fresh(['loan', 'reviewer']));
+        return response()->json($loanRequest->fresh(['borrower', 'reviewer']));
     }
 
     /**
@@ -149,7 +149,7 @@ class LoanRequestController extends Controller
      * PaymentProofController::tryNotifyAdminOfNewProof() — silent no-op if
      * no notification phone is configured.
      */
-    private function tryNotifyAdmin(Loan $loan, LoanRequest $loanRequest): void
+    private function tryNotifyAdmin(Borrower $borrower, LoanRequest $loanRequest): void
     {
         $adminPhone = Setting::get('admin_notify_phone');
         if (! $adminPhone) {
@@ -163,7 +163,7 @@ class LoanRequestController extends Controller
         try {
             $this->sms->send(
                 $adminPhone,
-                "New loan request from {$loan->name} (loan {$loan->loan_number}) for ₱"
+                "New loan request from {$borrower->name} (@{$borrower->username}) for ₱"
                     .number_format((float) $loanRequest->requested_amount, 2)." — {$planLabel}.{$link}"
             );
         } catch (Throwable $e) {

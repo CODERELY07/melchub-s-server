@@ -12,11 +12,16 @@ use Illuminate\Database\Eloquent\Model;
  * feature existed. This table only tracks the request, which repayment plan
  * the borrower is interested in, and the fact that they read the rules
  * before asking — see docs/loans.md Part 7.
+ *
+ * `borrower_id` is the requester (a Borrower can have several loans, so a
+ * request isn't tied to any one of them). `loan_id` is a leftover from
+ * before Borrower/Loan were split — kept nullable on old rows only, for
+ * history; new requests never set it.
  */
 class LoanRequest extends Model
 {
     protected $fillable = [
-        'loan_id',
+        'borrower_id',
         'plan',
         'requested_amount',
         'message',
@@ -36,6 +41,12 @@ class LoanRequest extends Model
         ];
     }
 
+    public function borrower()
+    {
+        return $this->belongsTo(Borrower::class);
+    }
+
+    /** Historical only — see the class docblock. */
     public function loan()
     {
         return $this->belongsTo(Loan::class);

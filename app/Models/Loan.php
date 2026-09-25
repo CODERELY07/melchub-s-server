@@ -2,30 +2,28 @@
 
 namespace App\Models;
 
-use Illuminate\Auth\Authenticatable as AuthenticatableTrait;
-use Illuminate\Contracts\Auth\Authenticatable as AuthenticatableContract;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
-use Laravel\Sanctum\HasApiTokens;
 
-class Loan extends Model implements AuthenticatableContract
+/**
+ * Loan terms only — a borrower's identity/login lives on Borrower (see the
+ * split_borrowers_from_loans migration and docs/loans.md). name/username/
+ * email/phone/location/credit_limit below are read-only pass-throughs onto
+ * $this->borrower, kept so the many places that already read `$loan->name`
+ * etc. (admin JSON, SMS text) didn't all need rewriting — they're no longer
+ * real columns on this table, so eager-load `borrower` before reading them
+ * in a loop or each row costs its own query.
+ */
+class Loan extends Model
 {
-    use AuthenticatableTrait, HasApiTokens, SoftDeletes;
+    use SoftDeletes;
 
-    // penalty_amount, closed_at, terms_accepted_at, terms_signature_name, and
-    // last_notified_at are all system-managed (see booted() and
-    // NotificationController/BorrowerAuthController), so deliberately left
-    // out of $fillable.
+    // penalty_amount, closed_at, and last_notified_at are all system-managed
+    // (see booted() and NotificationController), so deliberately left out.
     protected $fillable = [
-        'name',
-        'username',
-        'email',
-        'password',
-        'phone',
-        'location',
+        'borrower_id',
         'total_loan',
-        'credit_limit',
         'total_paid',
         'interest_rate',
         'repayment_plan',
@@ -37,17 +35,18 @@ class Loan extends Model implements AuthenticatableContract
         'created_by',
     ];
 
-    protected $hidden = [
-        'password',
-    ];
-
     protected $appends = [
         'interest_amount',
         'balance',
         'is_overdue',
-        'available_credit',
         'plan_name',
         'plan_period_days',
+        'name',
+        'username',
+        'email',
+        'phone',
+        'location',
+        'credit_limit',
     ];
 
     /**
@@ -58,9 +57,7 @@ class Loan extends Model implements AuthenticatableContract
     protected function casts(): array
     {
         return [
-            'password' => 'hashed',
             'total_loan' => 'decimal:2',
-            'credit_limit' => 'decimal:2',
             'total_paid' => 'decimal:2',
             'installments_enabled' => 'boolean',
             'interest_rate' => 'decimal:2',
@@ -161,6 +158,42 @@ class Loan extends Model implements AuthenticatableContract
         );
     }
 
+    public function borrower()
+    {
+        return $this->belongsTo(Borrower::class);
+    }
+
+    protected function name(): Attribute
+    {
+        return Attribute::get(fn () => $this->borrower?->name);
+    }
+
+    protected function username(): Attribute
+    {
+        return Attribute::get(fn () => $this->borrower?->username);
+    }
+
+    protected function email(): Attribute
+    {
+        return Attribute::get(fn () => $this->borrower?->email);
+    }
+
+    protected function phone(): Attribute
+    {
+        return Attribute::get(fn () => $this->borrower?->phone);
+    }
+
+    protected function location(): Attribute
+    {
+        return Attribute::get(fn () => $this->borrower?->location);
+    }
+
+    /** Read-only convenience for the admin UI — credit_limit is set on the borrower, shared across all their loans. */
+    protected function creditLimit(): Attribute
+    {
+        return Attribute::get(fn () => $this->borrower?->credit_limit);
+    }
+
     protected function planName(): Attribute
     {
         return Attribute::get(fn () => RepaymentPlan::lookup($this->repayment_plan)?->name);
@@ -180,34 +213,6 @@ class Loan extends Model implements AuthenticatableContract
                 && $this->due_date !== null
                 && $this->due_date->lt(today())
         );
-    }
-
-    /**
-     * How much more this client can borrow: the smaller of (a) their own
-     * credit_limit minus what they already have out, and (b) what's left in
-     * the admin's shared lending budget (Setting: lending_budget). Either cap
-     * may be unset — only the ones that exist apply — and null (not zero)
-     * means neither is configured, so the borrower's request form can tell
-     * "nothing configured" apart from "limit reached." Measured against
-     * total_loan (principal drawn), not balance, so interest/penalties never
-     * eat into anyone's borrowing room.
-     */
-    protected function availableCredit(): Attribute
-    {
-        return Attribute::get(function () {
-            $caps = [];
-
-            if ($this->credit_limit !== null) {
-                $caps[] = ((float) $this->credit_limit) - $this->outstanding_principal;
-            }
-
-            $pool = self::remainingBudget();
-            if ($pool !== null) {
-                $caps[] = $pool;
-            }
-
-            return $caps === [] ? null : max(0, round(min($caps), 2));
-        });
     }
 
     private static ?float $remainingBudgetCache = null;
@@ -269,11 +274,6 @@ class Loan extends Model implements AuthenticatableContract
     public function smsLogs()
     {
         return $this->hasMany(SmsLog::class);
-    }
-
-    public function loanRequests()
-    {
-        return $this->hasMany(LoanRequest::class);
     }
 
     /**

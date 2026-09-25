@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\Borrower;
 use App\Models\Loan;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -13,7 +14,7 @@ class LoansController extends Controller
      */
     public function index(Request $request)
     {
-        $query = Loan::query()->latest();
+        $query = Loan::query()->with('borrower')->latest();
 
         if ($status = $request->input('status')) {
             $query->where('status', $status);
@@ -21,9 +22,12 @@ class LoansController extends Controller
 
         if ($search = $request->input('search')) {
             $query->where(function ($q) use ($search) {
-                $q->where('name', 'like', "%{$search}%")
-                    ->orWhere('email', 'like', "%{$search}%")
-                    ->orWhere('loan_number', 'like', "%{$search}%");
+                $q->where('loan_number', 'like', "%{$search}%")
+                    ->orWhereHas('borrower', function ($b) use ($search) {
+                        $b->where('name', 'like', "%{$search}%")
+                            ->orWhere('email', 'like', "%{$search}%")
+                            ->orWhere('username', 'like', "%{$search}%");
+                    });
             });
         }
 
@@ -31,28 +35,49 @@ class LoansController extends Controller
     }
 
     /**
-     * Store a newly created resource in storage.
+     * Store a newly created resource in storage. Two shapes:
+     *  - `borrower_id` present: a new loan for an EXISTING borrower (the
+     *    "New loan" button next to a borrower once they already have one).
+     *  - no `borrower_id`: a brand-new borrower, created from the identity
+     *    fields; a loan is created alongside it only if loan terms
+     *    (total_loan) were actually sent — the "Add Client" page sends
+     *    none, so that path creates a borrower with zero loans, to have its
+     *    first loan added later the same way as a second one.
      */
     public function store(Request $request)
     {
-        $validated = $this->validated($request);
+        if ($request->filled('borrower_id')) {
+            $request->validate(['borrower_id' => 'required|integer|exists:borrowers,id']);
+            $borrower = Borrower::findOrFail($request->input('borrower_id'));
 
-        if (empty($validated['password'])) {
-            unset($validated['password']);
+            $loan = Loan::create($this->validatedLoanFields($request) + [
+                'borrower_id' => $borrower->id,
+                'created_by' => $request->user()->id,
+                'status' => $request->input('status') ?? 'active',
+            ]);
+
+            return response()->json($loan->fresh(), 201);
         }
 
-        $validated['created_by'] = $request->user()->id;
+        $identity = $this->validatedIdentity($request);
+        if (empty($identity['password'])) {
+            unset($identity['password']);
+        }
 
-        // Newly created clients are active right away, not stuck in the
-        // DB-default 'pending'; an explicit status (New loan form) wins.
-        $validated['status'] ??= 'active';
+        $borrower = Borrower::create($identity + ['created_by' => $request->user()->id]);
 
-        $loan = Loan::create($validated);
+        if (! $request->filled('total_loan')) {
+            return response()->json($borrower->fresh(), 201);
+        }
 
-        // Fields not sent (e.g. total_loan/status when created via "Add
-        // Client" with no loan terms yet) get their value from the DB
-        // default, which the in-memory $loan from create() won't reflect
-        // until re-fetched.
+        $loan = Loan::create($this->validatedLoanFields($request) + [
+            'borrower_id' => $borrower->id,
+            'created_by' => $request->user()->id,
+            // Newly created clients are active right away, not stuck in the
+            // DB-default 'pending'; an explicit status (New loan form) wins.
+            'status' => $request->input('status') ?? 'active',
+        ]);
+
         return response()->json($loan->fresh(), 201);
     }
 
@@ -65,23 +90,31 @@ class LoansController extends Controller
     }
 
     /**
-     * Update the specified resource in storage.
+     * Update the specified resource in storage. Identity fields (name,
+     * username, email, password, phone, location, credit_limit) route to
+     * the loan's borrower — shared across all of that borrower's loans —
+     * everything else updates the loan itself. This keeps the existing
+     * "Edit loan" form (one flat set of fields) working unchanged even
+     * though the two halves now live in different tables.
      */
     public function update(Request $request, Loan $loan)
     {
-        $validated = $this->validated($request, $loan);
-
-        if (empty($validated['password'])) {
-            unset($validated['password']);
+        if ($request->hasAny(['name', 'username', 'email', 'password', 'phone', 'location', 'credit_limit'])) {
+            $identity = $this->validatedIdentity($request, $loan->borrower);
+            if (empty($identity['password'])) {
+                unset($identity['password']);
+            }
+            $loan->borrower->update($identity);
         }
 
-        $loan->update($validated);
+        $loan->update($this->validatedLoanFields($request));
 
         return response()->json($loan->fresh());
     }
 
     /**
-     * Remove the specified resource from storage.
+     * Remove the specified resource from storage. Only this loan — the
+     * borrower and their other loans are untouched.
      */
     public function destroy(Loan $loan)
     {
@@ -126,28 +159,32 @@ class LoansController extends Controller
     }
 
     /**
-     * total_loan/start_date/due_date used to be `required` — every loan had
-     * to have its terms set the moment the account was created. They're now
-     * `sometimes` (total_loan) / `sometimes|nullable` (the dates) instead,
-     * so the "Add Client" page (client/app/admin/clients/new/page.tsx) can
-     * create a bare account with no loan terms yet, leaving those for the
-     * admin to fill in later via this same endpoint's PUT. This doesn't
-     * change anything for the existing "New loan" modal, which still always
-     * submits all three (they're `required` on that form) — see
-     * docs/loans.md Part 0 for why a loosened-but-unused-by-existing-callers
-     * validation change was preferred over a second, duplicate endpoint.
+     * Borrower identity fields — validated against `borrowers`, not `loans`,
+     * now that they live there. `$ignore` is the borrower being updated (if
+     * any), so its own username doesn't collide with itself.
      */
-    private function validated(Request $request, ?Loan $loan = null): array
+    private function validatedIdentity(Request $request, ?Borrower $ignore = null): array
     {
         return $request->validate([
             'name' => 'required|string|max:255',
-            'username' => ['required', 'string', 'max:255', Rule::unique('loans', 'username')->ignore($loan?->id)],
+            'username' => ['required', 'string', 'max:255', Rule::unique('borrowers', 'username')->ignore($ignore?->id)],
             'email' => 'sometimes|nullable|email|max:255',
             'password' => 'sometimes|nullable|string|min:6',
             'phone' => 'sometimes|nullable|string|max:30',
             'location' => 'sometimes|nullable|string|max:255',
-            'total_loan' => 'sometimes|numeric|min:0',
             'credit_limit' => 'sometimes|nullable|numeric|min:0',
+        ]);
+    }
+
+    /**
+     * Loan terms only. total_loan/start_date/due_date are `sometimes` (not
+     * `required`) so "Add Client" can create a borrower with no loan yet,
+     * and updating a loan's terms doesn't force every field to be resent.
+     */
+    private function validatedLoanFields(Request $request): array
+    {
+        return $request->validate([
+            'total_loan' => 'sometimes|numeric|min:0',
             'total_paid' => 'sometimes|numeric|min:0',
             'interest_rate' => 'sometimes|numeric|min:0|max:100',
             'repayment_plan' => ['sometimes', Rule::exists('repayment_plans', 'key')],

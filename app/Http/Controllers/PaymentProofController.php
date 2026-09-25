@@ -10,6 +10,7 @@ use App\Services\SupabaseStorageService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 use RuntimeException;
+use Symfony\Component\HttpKernel\Exception\NotFoundHttpException;
 use Throwable;
 
 class PaymentProofController extends Controller
@@ -21,21 +22,29 @@ class PaymentProofController extends Controller
     }
 
     /**
-     * Borrower: submit a GCash screenshot as proof of payment.
+     * Borrower: submit a GCash screenshot as proof of payment against one
+     * of their own loans (a borrower can have more than one, so they say
+     * which — the frontend already knows since the Pay page is per-loan).
      */
     public function store(Request $request)
     {
-        $loan = $request->user();
+        $borrower = $request->user();
 
         $validated = $request->validate([
+            'loan_id' => 'required|integer',
             'amount' => 'required|numeric|min:0.01',
             'screenshot' => 'required|image|max:10240',
         ]);
 
+        $loan = $borrower->loans()->find($validated['loan_id']);
+        if (! $loan) {
+            throw new NotFoundHttpException();
+        }
+
         try {
             $upload = $this->storage->upload(
                 $validated['screenshot'],
-                "{$loan->loan_number}-{$loan->username}-".now()->format('Ymd_His').'.'.$validated['screenshot']->extension()
+                "{$loan->loan_number}-{$borrower->username}-".now()->format('Ymd_His').'.'.$validated['screenshot']->extension()
             );
         } catch (RuntimeException $e) {
             return response()->json(['message' => $e->getMessage()], 422);
@@ -54,13 +63,18 @@ class PaymentProofController extends Controller
     }
 
     /**
-     * Borrower: their own submitted proofs, most recent first.
+     * Borrower: their own submitted proofs, most recent first — optionally
+     * narrowed to one loan (the per-loan Pay page only wants that loan's).
      */
     public function mine(Request $request)
     {
-        return response()->json(
-            $request->user()->paymentProofs()->latest()->get()
-        );
+        $query = $request->user()->paymentProofs()->latest();
+
+        if ($loanId = $request->input('loan_id')) {
+            $query->where('loan_id', $loanId);
+        }
+
+        return response()->json($query->get());
     }
 
     /**
@@ -68,7 +82,7 @@ class PaymentProofController extends Controller
      */
     public function index(Request $request)
     {
-        $query = PaymentProof::with(['loan:id,loan_number,name,phone', 'reviewer:id,name'])->latest();
+        $query = PaymentProof::with(['loan.borrower:id,name,phone', 'reviewer:id,name'])->latest();
 
         if ($status = $request->input('status')) {
             $query->where('status', $status);

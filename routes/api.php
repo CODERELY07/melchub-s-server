@@ -2,7 +2,9 @@
 
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\BorrowerAuthController;
+use App\Http\Controllers\Api\BorrowerLoansController;
 use App\Http\Controllers\AnalyticsController;
+use App\Http\Controllers\BorrowersController;
 use App\Http\Controllers\LoanRequestController;
 use App\Http\Controllers\LoansController;
 use App\Http\Controllers\NotificationController;
@@ -23,8 +25,10 @@ Route::middleware(['auth:sanctum', 'borrower'])->prefix('borrower')->group(funct
     Route::get('/me', [BorrowerAuthController::class, 'me']);
     Route::put('/profile', [BorrowerAuthController::class, 'updateProfile']);
     Route::post('/change-password', [BorrowerAuthController::class, 'changePassword']);
-    Route::get('/history', [BorrowerAuthController::class, 'history']);
     Route::post('/accept-terms', [BorrowerAuthController::class, 'acceptTerms']);
+    Route::get('/loans', [BorrowerLoansController::class, 'index']);
+    Route::get('/loans/{loan}', [BorrowerLoansController::class, 'show']);
+    Route::get('/loans/{loan}/history', [BorrowerLoansController::class, 'history']);
     Route::post('/payment-proofs', [PaymentProofController::class, 'store']);
     Route::get('/payment-proofs', [PaymentProofController::class, 'mine']);
     Route::post('/loan-requests', [LoanRequestController::class, 'store']);
@@ -62,6 +66,8 @@ Route::middleware(['auth:sanctum', 'staff', 'role:admin'])->group(function () {
     // Was public/unauthenticated — anyone on the internet could create a
     // staff account. Now only an existing admin can create another one.
     Route::post('/register', [AuthController::class, 'register']);
+
+    Route::get('/borrowers', [BorrowersController::class, 'index']);
 
     Route::apiResource('loans', LoansController::class);
     Route::post('/loans/{loan}/payments', [LoansController::class, 'recordPayment']);

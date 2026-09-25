@@ -3,7 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Models\Loan;
+use App\Models\Borrower;
 use App\Services\SmsGatewayService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -26,9 +26,9 @@ class BorrowerAuthController extends Controller
             'remember' => 'sometimes|boolean',
         ]);
 
-        $loan = Loan::where('username', $credentials['username'])->first();
+        $borrower = Borrower::where('username', $credentials['username'])->first();
 
-        if (! $loan || ! $loan->password || ! Hash::check($credentials['password'], $loan->password)) {
+        if (! $borrower || ! $borrower->password || ! Hash::check($credentials['password'], $borrower->password)) {
             throw ValidationException::withMessages([
                 'username' => ['These credentials do not match our records.'],
             ]);
@@ -37,11 +37,11 @@ class BorrowerAuthController extends Controller
         // Same reasoning as the staff login (Api\AuthController::login()): the
         // expiry has to be enforced server-side via the token itself.
         $expiresAt = $request->boolean('remember') ? now()->addYear() : now()->addDay();
-        $token = $loan->createToken('borrower_token', ['*'], $expiresAt)->plainTextToken;
+        $token = $borrower->createToken('borrower_token', ['*'], $expiresAt)->plainTextToken;
 
         return response()->json([
             'token' => $token,
-            'loan' => $loan,
+            'borrower' => $borrower,
         ]);
     }
 
@@ -59,55 +59,52 @@ class BorrowerAuthController extends Controller
 
     public function updateProfile(Request $request)
     {
-        $loan = $request->user();
+        $borrower = $request->user();
 
         $validated = $request->validate([
             'name' => 'required|string|max:255',
-            'username' => ['required', 'string', 'max:255', Rule::unique('loans', 'username')->ignore($loan->id)],
+            'username' => ['required', 'string', 'max:255', Rule::unique('borrowers', 'username')->ignore($borrower->id)],
             'phone' => 'sometimes|nullable|string|max:30',
             'location' => 'sometimes|nullable|string|max:255',
             'email' => 'sometimes|nullable|email|max:255',
         ]);
 
-        $loan->update($validated);
+        $borrower->update($validated);
 
-        return response()->json($loan->fresh());
+        return response()->json($borrower->fresh());
     }
 
     public function changePassword(Request $request)
     {
-        $loan = $request->user();
+        $borrower = $request->user();
 
         $validated = $request->validate([
             'current_password' => 'required|string',
             'password' => 'required|string|min:6|confirmed',
         ]);
 
-        if (! $loan->password || ! Hash::check($validated['current_password'], $loan->password)) {
+        if (! $borrower->password || ! Hash::check($validated['current_password'], $borrower->password)) {
             throw ValidationException::withMessages([
                 'current_password' => ['Your current password is incorrect.'],
             ]);
         }
 
-        $loan->update(['password' => $validated['password']]);
+        $borrower->update(['password' => $validated['password']]);
 
         return response()->json(['message' => 'Password updated']);
-    }
-
-    public function history(Request $request)
-    {
-        return response()->json($request->user()->history());
     }
 
     /**
      * Records acceptance of the terms & conditions, with the borrower's
      * typed full name standing as their e-signature. One-time — the portal
-     * only shows the prompt while terms_accepted_at is still null.
+     * only shows the prompt while terms_accepted_at is still null. This now
+     * happens at the account level (once per borrower), not per loan, since
+     * a borrower may not have a loan yet when they first accept.
      */
     public function acceptTerms(Request $request)
     {
-        $loan = $request->user();
-        $alreadyAccepted = $loan->terms_accepted_at !== null;
+        $borrower = $request->user();
+        $alreadyAccepted = $borrower->terms_accepted_at !== null;
 
         $validated = $request->validate([
             'signature_name' => 'required|string|max:255',
@@ -115,7 +112,7 @@ class BorrowerAuthController extends Controller
 
         // Deliberately not in $fillable (borrowers shouldn't be able to set
         // these via updateProfile), so bypass the guard for this one write.
-        $loan->forceFill([
+        $borrower->forceFill([
             'terms_accepted_at' => now(),
             'terms_signature_name' => $validated['signature_name'],
         ])->save();
@@ -124,28 +121,29 @@ class BorrowerAuthController extends Controller
         // against sending it again if this endpoint is ever hit twice (the
         // frontend only shows the prompt while terms_accepted_at is null,
         // but the API itself doesn't otherwise stop a second call).
-        if (! $alreadyAccepted && $loan->phone) {
-            $this->sendWelcomeSms($loan);
+        if (! $alreadyAccepted && $borrower->phone) {
+            $this->sendWelcomeSms($borrower);
         }
 
-        return response()->json($loan->fresh());
+        return response()->json($borrower->fresh());
     }
 
     /**
      * Best-effort — a failed SMS must never undo or block the terms
-     * acceptance that already succeeded above.
+     * acceptance that already succeeded above. Deliberately generic (no
+     * loan amount/dates): terms are accepted at the account level, before a
+     * loan necessarily exists yet.
      */
-    private function sendWelcomeSms(Loan $loan): void
+    private function sendWelcomeSms(Borrower $borrower): void
     {
-        $message = "Hi {$loan->name}, welcome to MELCHUB! Your loan of ₱".number_format((float) $loan->total_loan, 2)
-            ." is now active, starting {$loan->start_date->format('M d, Y')} and due on {$loan->due_date->format('M d, Y')}. "
-            .'Thank you for your trust — we\'re glad to have you with us and wish you all the best!'
+        $message = "Hi {$borrower->name}, welcome to MELCHUB! Thank you for accepting our terms — "
+            .'we\'re glad to have you with us and wish you all the best!'
             .$this->accountLinkLine();
 
         try {
-            $this->sms->send($loan->phone, $message, $loan->id);
+            $this->sms->send($borrower->phone, $message);
         } catch (Throwable $e) {
-            Log::warning("Failed to send welcome SMS for loan {$loan->id}: {$e->getMessage()}");
+            Log::warning("Failed to send welcome SMS for borrower {$borrower->id}: {$e->getMessage()}");
         }
     }
 

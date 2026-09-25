@@ -87,10 +87,11 @@ class NotificationController extends Controller
     public function notifyAllDue()
     {
         $loans = Loan::query()
+            ->with('borrower')
             ->whereNotIn('status', Loan::CLOSED_STATUSES)
             ->whereNotNull('due_date')
             ->whereDate('due_date', '<=', today())
-            ->whereNotNull('phone')
+            ->whereHas('borrower', fn ($q) => $q->whereNotNull('phone'))
             ->get();
 
         $sent = [];
