@@ -3,7 +3,9 @@
 namespace App\Http\Controllers;
 
 use App\Models\Borrower;
+use App\Models\Loan;
 use App\Models\LoanRequest;
+use App\Models\RepaymentPlan;
 use App\Models\Setting;
 use App\Services\SmsGatewayService;
 use Illuminate\Http\Request;
@@ -87,11 +89,17 @@ class LoanRequestController extends Controller
     }
 
     /**
-     * Admin: acknowledge the request as handled. Deliberately does NOT touch
-     * any Loan — the admin creates the actual loan (with a real principal,
-     * interest rate, and dates) via the Loans page's "New loan" button for
-     * this borrower, exactly as before this feature existed (see
-     * docs/loans.md Part 7 for why this was kept this simple).
+     * Admin: accept a request — this actually creates the loan now, active
+     * and recorded right away, rather than just marking the request
+     * reviewed and leaving the admin to set it up manually afterward
+     * (that's how this used to work; see docs/loans.md Part 7 for why, and
+     * the "Borrowers can have multiple loans" section for why it changed).
+     *
+     * interest_rate/repayment_plan come from the plan the borrower picked;
+     * start_date is today and due_date one period out, the same convention
+     * every other due date in this app already follows (a single date that
+     * keeps pushing forward by the plan's period on a late payment, not a
+     * fixed end-of-term date).
      */
     public function accept(Request $request, LoanRequest $loanRequest)
     {
@@ -99,13 +107,56 @@ class LoanRequestController extends Controller
             return response()->json(['message' => 'This request has already been reviewed.'], 422);
         }
 
+        $borrower = $loanRequest->borrower;
+
+        // Re-check now, not just at request time — the borrower's available
+        // credit (other loans, the shared budget) may have moved since they
+        // asked.
+        if ($borrower->available_credit === null || $loanRequest->requested_amount > $borrower->available_credit) {
+            return response()->json([
+                'message' => $borrower->available_credit === null
+                    ? "This borrower no longer has a borrowing limit set."
+                    : 'This now exceeds their available credit of ₱'.number_format((float) $borrower->available_credit, 2).'.',
+            ], 422);
+        }
+
+        $plan = RepaymentPlan::lookup($loanRequest->plan);
+        $startDate = today();
+
+        $loan = Loan::create([
+            'borrower_id' => $borrower->id,
+            'total_loan' => $loanRequest->requested_amount,
+            'interest_rate' => $plan?->daily_rate ?? 0,
+            'repayment_plan' => $loanRequest->plan,
+            'installments_enabled' => true,
+            'status' => 'active',
+            'start_date' => $startDate,
+            'due_date' => $startDate->copy()->addDays($plan?->period_days ?? 7),
+            'created_by' => $request->user()->id,
+        ]);
+
         $loanRequest->update([
             'status' => 'accepted',
             'reviewed_by' => $request->user()->id,
             'reviewed_at' => now(),
         ]);
 
-        return response()->json($loanRequest->fresh(['borrower', 'reviewer']));
+        if ($borrower->phone) {
+            try {
+                $this->sms->send(
+                    $borrower->phone,
+                    "Hi {$borrower->name}, your loan request was approved! Loan {$loan->loan_number} for ₱"
+                        .number_format((float) $loan->total_loan, 2)." is now active, due ".$loan->due_date->format('M d, Y').'.'
+                );
+            } catch (Throwable $e) {
+                Log::warning("Failed to send loan-request accept SMS for request {$loanRequest->id}: {$e->getMessage()}");
+            }
+        }
+
+        return response()->json([
+            'request' => $loanRequest->fresh(['borrower', 'reviewer']),
+            'loan' => $loan->fresh(),
+        ]);
     }
 
     /**

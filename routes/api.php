@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\BorrowerAuthController;
 use App\Http\Controllers\Api\BorrowerLoansController;
 use App\Http\Controllers\AnalyticsController;
 use App\Http\Controllers\BorrowersController;
+use App\Http\Controllers\CashAccountController;
 use App\Http\Controllers\LoanRequestController;
 use App\Http\Controllers\LoansController;
 use App\Http\Controllers\NotificationController;
@@ -68,6 +69,11 @@ Route::middleware(['auth:sanctum', 'staff', 'role:admin'])->group(function () {
     Route::post('/register', [AuthController::class, 'register']);
 
     Route::get('/borrowers', [BorrowersController::class, 'index']);
+
+    Route::get('/cash-accounts', [CashAccountController::class, 'index']);
+    Route::post('/cash-accounts', [CashAccountController::class, 'store']);
+    Route::put('/cash-accounts/{cashAccount}', [CashAccountController::class, 'update']);
+    Route::delete('/cash-accounts/{cashAccount}', [CashAccountController::class, 'destroy']);
 
     Route::apiResource('loans', LoansController::class);
     Route::post('/loans/{loan}/payments', [LoansController::class, 'recordPayment']);
