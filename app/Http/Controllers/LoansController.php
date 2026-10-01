@@ -163,17 +163,32 @@ class LoansController extends Controller
      * now that they live there. `$ignore` is the borrower being updated (if
      * any), so its own username doesn't collide with itself.
      */
+    /**
+     * `username` is deliberately not `required` — some borrowers never use
+     * the portal at all (no login needed, e.g. someone who isn't
+     * comfortable with a phone/website), and just need to exist as a name
+     * on their loans. Blank username means no login exists for them; blank
+     * comes through as `''` from the form, so it's coerced to `null` here
+     * rather than stored as an empty string (which would collide with any
+     * other blank username under the unique index — `null`s don't).
+     */
     private function validatedIdentity(Request $request, ?Borrower $ignore = null): array
     {
-        return $request->validate([
+        $validated = $request->validate([
             'name' => 'required|string|max:255',
-            'username' => ['required', 'string', 'max:255', Rule::unique('borrowers', 'username')->ignore($ignore?->id)],
+            'username' => ['sometimes', 'nullable', 'string', 'max:255', Rule::unique('borrowers', 'username')->ignore($ignore?->id)],
             'email' => 'sometimes|nullable|email|max:255',
             'password' => 'sometimes|nullable|string|min:6',
             'phone' => 'sometimes|nullable|string|max:30',
             'location' => 'sometimes|nullable|string|max:255',
             'credit_limit' => 'sometimes|nullable|numeric|min:0',
         ]);
+
+        if (empty($validated['username'])) {
+            $validated['username'] = null;
+        }
+
+        return $validated;
     }
 
     /**
@@ -187,6 +202,7 @@ class LoansController extends Controller
             'total_loan' => 'sometimes|numeric|min:0',
             'total_paid' => 'sometimes|numeric|min:0',
             'interest_rate' => 'sometimes|numeric|min:0|max:100',
+            'compounds_interest' => ['sometimes', 'boolean'],
             'repayment_plan' => ['sometimes', Rule::exists('repayment_plans', 'key')],
             'installments_enabled' => ['sometimes', 'boolean'],
             'status' => ['sometimes', Rule::in(['pending', 'active', 'paid', 'overdue', 'defaulted', 'cancelled'])],

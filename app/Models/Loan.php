@@ -26,6 +26,7 @@ class Loan extends Model
         'total_loan',
         'total_paid',
         'interest_rate',
+        'compounds_interest',
         'repayment_plan',
         'installments_enabled',
         'status',
@@ -60,6 +61,7 @@ class Loan extends Model
             'total_loan' => 'decimal:2',
             'total_paid' => 'decimal:2',
             'installments_enabled' => 'boolean',
+            'compounds_interest' => 'boolean',
             'interest_rate' => 'decimal:2',
             'penalty_amount' => 'decimal:2',
             'start_date' => 'date',
@@ -96,6 +98,57 @@ class Loan extends Model
         static::saved(fn () => self::flushBudgetCache());
         static::deleted(fn () => self::flushBudgetCache());
         static::restored(fn () => self::flushBudgetCache());
+
+        // No cron on this app's hosting (see docs/loans.md) — instead, the
+        // next time ANYONE loads this loan (admin or borrower, list or
+        // single), catch its real daily interest entries up to today. Only
+        // does anything for a compounding loan that isn't already caught
+        // up, so this is a cheap no-op the rest of the time.
+        static::retrieved(fn (Loan $loan) => $loan->catchUpInterest());
+    }
+
+    /**
+     * For a compounding loan, writes one real `LoanInterestEntry` row for
+     * every day since the last recorded one (or since start_date, if none
+     * exist yet) up through today or closed_at — each day's interest
+     * calculated on the running balance *including* every prior day's
+     * compounded interest, not the original principal. A no-op for a
+     * simple-interest loan (compounds_interest false), a closed loan with
+     * nothing left to accrue, or one already caught up to its cutoff.
+     */
+    public function catchUpInterest(): void
+    {
+        if (! $this->compounds_interest) {
+            return;
+        }
+
+        $cutoff = $this->accrualCutoff();
+        if (! $cutoff) {
+            return;
+        }
+
+        $latest = $this->interestEntries()->orderByDesc('entry_date')->first();
+        $cursor = $latest ? $latest->entry_date->copy()->addDay() : $this->start_date->copy()->startOfDay();
+        $runningBalance = $latest ? (float) $latest->running_balance : (float) $this->total_loan;
+
+        if ($cursor->gt($cutoff)) {
+            return;
+        }
+
+        $rate = (float) $this->interest_rate / 100;
+
+        while ($cursor->lte($cutoff)) {
+            $interest = round($runningBalance * $rate, 2);
+            $runningBalance = round($runningBalance + $interest, 2);
+
+            $this->interestEntries()->create([
+                'entry_date' => $cursor->toDateString(),
+                'interest_amount' => $interest,
+                'running_balance' => $runningBalance,
+            ]);
+
+            $cursor->addDay();
+        }
     }
 
     /**
@@ -125,6 +178,12 @@ class Loan extends Model
     protected function interestAmount(): Attribute
     {
         return Attribute::get(function () {
+            if ($this->compounds_interest) {
+                $latest = $this->interestEntries()->orderByDesc('entry_date')->first();
+
+                return $latest ? round((float) $latest->running_balance - (float) $this->total_loan, 2) : 0.0;
+            }
+
             $cutoff = $this->accrualCutoff();
             if (! $cutoff) {
                 return 0.0;
@@ -276,6 +335,11 @@ class Loan extends Model
         return $this->hasMany(SmsLog::class);
     }
 
+    public function interestEntries()
+    {
+        return $this->hasMany(LoanInterestEntry::class);
+    }
+
     /**
      * The single place a payment gets logged and reflected on the loan —
      * used by both the admin's direct "record payment" action and approving
@@ -322,12 +386,29 @@ class Loan extends Model
 
     /**
      * One entry per day the loan has been open, from start_date up to today
-     * (or the day it closed, if it already has) — each worth the same flat
-     * daily amount. This is what `interest_amount`/`balance` are built from,
-     * not a separate display-only estimate.
+     * (or the day it closed, if it already has). For a compounding loan
+     * these are the real, persisted `LoanInterestEntry` rows (written by
+     * catchUpInterest(), not recalculated here); for a simple-interest one
+     * they're still computed on the fly as before — each worth the same
+     * flat daily amount. This is what `interest_amount`/`balance` are built
+     * from, not a separate display-only estimate.
      */
     public function dailyInterestEntries(): array
     {
+        if ($this->compounds_interest) {
+            return $this->interestEntries()
+                ->orderBy('entry_date')
+                ->get()
+                ->map(fn (LoanInterestEntry $entry, int $i) => [
+                    'type' => 'interest',
+                    'date' => $entry->entry_date->toDateString(),
+                    'day' => $i + 1,
+                    'amount' => (float) $entry->interest_amount,
+                    'note' => 'Compounded — balance now ₱'.number_format((float) $entry->running_balance, 2),
+                ])
+                ->all();
+        }
+
         $cutoff = $this->accrualCutoff();
         if (! $cutoff) {
             return [];
