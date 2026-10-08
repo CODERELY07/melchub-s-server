@@ -4,6 +4,8 @@ namespace App\Http\Controllers;
 
 use App\Models\Borrower;
 use App\Models\Loan;
+use App\Models\LoanPenalty;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 
@@ -150,6 +152,32 @@ class LoansController extends Controller
     }
 
     /**
+     * Admin: take back a late fee that shouldn't have been charged (a
+     * payment recorded late, a mistake). Removes the ledger row and the
+     * amount from penalty_amount together, so `balance` stays consistent.
+     * It does not re-open the week it was charged for — the due date has
+     * already moved on, so nothing will charge it again.
+     */
+    public function removePenalty(Loan $loan, LoanPenalty $penalty)
+    {
+        if ($penalty->loan_id !== $loan->id) {
+            abort(404);
+        }
+
+        DB::transaction(function () use ($loan, $penalty) {
+            $amount = (float) $penalty->amount;
+            $penalty->delete();
+
+            $current = (float) DB::table('loans')->where('id', $loan->id)->lockForUpdate()->value('penalty_amount');
+            DB::table('loans')
+                ->where('id', $loan->id)
+                ->update(['penalty_amount' => max(0, round($current - $amount, 2))]);
+        });
+
+        return response()->json($loan->fresh());
+    }
+
+    /**
      * The computed daily interest breakdown merged with recorded payments,
      * for the admin to review the same ledger the borrower sees.
      */
@@ -205,6 +233,7 @@ class LoansController extends Controller
             'compounds_interest' => ['sometimes', 'boolean'],
             'repayment_plan' => ['sometimes', Rule::exists('repayment_plans', 'key')],
             'installments_enabled' => ['sometimes', 'boolean'],
+            'auto_penalty' => ['sometimes', 'boolean'],
             'status' => ['sometimes', Rule::in(['pending', 'active', 'paid', 'overdue', 'defaulted', 'cancelled'])],
             'notes' => 'sometimes|nullable|string',
             'start_date' => 'sometimes|nullable|date',

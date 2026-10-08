@@ -20,7 +20,7 @@ class BorrowerLoansController extends Controller
     public function index(Request $request)
     {
         return response()->json(
-            $request->user()->loans()->latest()->get()
+            $request->user()->loans()->with('borrower')->latest()->get()
         );
     }
 

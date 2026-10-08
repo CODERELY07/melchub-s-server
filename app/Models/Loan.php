@@ -5,6 +5,8 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 
 /**
  * Loan terms only — a borrower's identity/login lives on Borrower (see the
@@ -29,6 +31,7 @@ class Loan extends Model
         'compounds_interest',
         'repayment_plan',
         'installments_enabled',
+        'auto_penalty',
         'status',
         'notes',
         'start_date',
@@ -36,10 +39,19 @@ class Loan extends Model
         'created_by',
     ];
 
+    // The eager-loaded borrower is only there to feed the flat name/phone/…
+    // accessors below; serializing it too would run all of Borrower's own
+    // computed attributes (available_credit, outstanding_principal) — two
+    // extra queries per loan in every list — for data already in the JSON.
+    protected $hidden = ['borrower'];
+
     protected $appends = [
         'interest_amount',
         'balance',
         'is_overdue',
+        'installment_amount',
+        'amount_due_this_week',
+        'past_due_amount',
         'plan_name',
         'plan_period_days',
         'name',
@@ -62,6 +74,8 @@ class Loan extends Model
             'total_paid' => 'decimal:2',
             'installments_enabled' => 'boolean',
             'compounds_interest' => 'boolean',
+            'auto_penalty' => 'boolean',
+            'auto_penalty_from' => 'date',
             'interest_rate' => 'decimal:2',
             'penalty_amount' => 'decimal:2',
             'start_date' => 'date',
@@ -92,6 +106,24 @@ class Loan extends Model
             } elseif (! $isClosed && $loan->closed_at) {
                 $loan->closed_at = null;
             }
+
+            // Automatic late fees only ever bill deadlines from the day the
+            // option started applying (a new loan, or it being switched on)
+            // — never weeks that passed before it did.
+            $turningOnAutoPenalty = $loan->auto_penalty !== false
+                && (! $loan->exists || $loan->isDirty('auto_penalty'));
+            if ($turningOnAutoPenalty) {
+                $loan->auto_penalty_from = today();
+            }
+
+            // Recorded compound-interest entries were calculated from the
+            // old principal/rate/start date (or while compounding was on).
+            // Changing any of those makes them wrong, so drop them — the
+            // next catch-up rebuilds them from start_date under the new terms.
+            if ($loan->exists && $loan->isDirty(['total_loan', 'interest_rate', 'start_date', 'compounds_interest'])) {
+                $loan->interestEntries()->delete();
+                $loan->latestRunningBalance = null;
+            }
         });
 
         // remainingBudget() depends on every loan's principal and status.
@@ -104,7 +136,199 @@ class Loan extends Model
         // single), catch its real daily interest entries up to today. Only
         // does anything for a compounding loan that isn't already caught
         // up, so this is a cheap no-op the rest of the time.
-        static::retrieved(fn (Loan $loan) => $loan->catchUpInterest());
+        static::retrieved(function (Loan $loan) {
+            $loan->catchUpInterest();
+            $loan->catchUpPenalties();
+        });
+    }
+
+    private function usesAutoPenalty(): bool
+    {
+        return $this->auto_penalty
+            && $this->installments_enabled
+            && ! in_array($this->status, self::CLOSED_STATUSES, true);
+    }
+
+    private function planInstallments(): int
+    {
+        return max(1, RepaymentPlan::lookup($this->repayment_plan)?->installments ?? 5);
+    }
+
+    /**
+     * What one period's payment is: an even share of the principal plus
+     * that period's interest — the same figure the borrower's Pay page has
+     * always shown. Nominal (simple-interest) even for a compounding loan.
+     */
+    protected function installmentAmount(): Attribute
+    {
+        return Attribute::get(fn () => round(
+            ((float) $this->total_loan) * (1 / $this->planInstallments() + (((float) $this->interest_rate) / 100) * $this->plan_period_days),
+            2
+        ));
+    }
+
+    /** Which week's deadline $deadline is (1 = first), counted from start_date. */
+    private function deadlineIndex(Carbon $deadline): int
+    {
+        if (! $this->start_date) {
+            return 1;
+        }
+
+        $days = (int) round($this->start_date->copy()->startOfDay()->diffInDays($deadline->copy()->startOfDay(), false));
+
+        return max(1, (int) ceil($days / max(1, $this->plan_period_days)));
+    }
+
+    /** Cumulative amount that should have been paid by deadline number $index (capped at the plan's last installment). */
+    private function scheduledTarget(int $index): float
+    {
+        return min($index, $this->planInstallments()) * $this->installment_amount;
+    }
+
+    /** total_paid as it stood at the end of $date — payments recorded with a later paid_at don't count yet. */
+    private function paidAsOf(Carbon $date): float
+    {
+        $later = (float) $this->payments()->whereDate('paid_at', '>', $date->toDateString())->sum('amount');
+
+        return (float) $this->total_paid - $later;
+    }
+
+    /**
+     * Shortfall against every deadline that has already passed (every
+     * deadline before the current due_date) — what's actually late, as
+     * opposed to what's merely due by the next deadline.
+     */
+    protected function pastDueAmount(): Attribute
+    {
+        return Attribute::get(function () {
+            if (! $this->usesAutoPenalty() || ! $this->due_date) {
+                return 0.0;
+            }
+
+            $passed = $this->deadlineIndex($this->due_date) - 1;
+            if ($passed <= 0) {
+                return 0.0;
+            }
+
+            $shortfall = $this->scheduledTarget($passed) - (float) $this->total_paid;
+
+            return round(max(0.0, min($shortfall, max(0.0, (float) $this->balance))), 2);
+        });
+    }
+
+    /**
+     * What the borrower still needs to pay to be caught up as of the next
+     * deadline — this week's installment plus any shortfall from earlier
+     * weeks. Capped at the balance.
+     */
+    protected function amountDueThisWeek(): Attribute
+    {
+        return Attribute::get(function () {
+            if (in_array($this->status, self::CLOSED_STATUSES, true)) {
+                return 0.0;
+            }
+
+            $balance = max(0.0, (float) $this->balance);
+
+            if (! $this->installments_enabled) {
+                return round($balance, 2);
+            }
+
+            if (! $this->auto_penalty || ! $this->due_date) {
+                return round(min($balance, $this->installment_amount), 2);
+            }
+
+            $target = $this->scheduledTarget($this->deadlineIndex($this->due_date));
+
+            return round(max(0.0, min($balance, $target - (float) $this->total_paid)), 2);
+        });
+    }
+
+    /**
+     * For an automatic-penalty loan, walks every weekly deadline that has
+     * passed since the loan was last looked at: if the total paid by that
+     * deadline was below the cumulative amount due by then, charges the
+     * admin-configured late fee (Settings → Late fee) as a real
+     * LoanPenalty row; either way the due date rolls forward one period.
+     * Runs on every load of the loan (see booted()) because this app's
+     * hosting has no cron — and each week is claimed with a compare-and-swap
+     * on due_date inside a transaction, so two requests opening the same
+     * loan at once can never both charge the same week.
+     *
+     * Past the plan's last installment the target stops growing, so the fee
+     * keeps being charged each week until the scheduled total is paid.
+     */
+    public function catchUpPenalties(): void
+    {
+        if (! $this->usesAutoPenalty()
+            || ! in_array($this->status, ['active', 'overdue'], true)
+            || ! $this->due_date
+            || ! $this->start_date) {
+            return;
+        }
+
+        $today = today();
+        if (! $this->due_date->lt($today)) {
+            return;
+        }
+
+        $periodDays = max(1, $this->plan_period_days);
+        $fee = (float) Setting::get('late_fee_amount', '50');
+        $billableFrom = $this->auto_penalty_from ?? $today;
+        $deadline = $this->due_date->copy()->startOfDay();
+        $guard = 0;
+
+        while ($deadline->lt($today) && $guard++ < 400) {
+            $next = $deadline->copy()->addDays($periodDays);
+            $index = $this->deadlineIndex($deadline);
+            $expected = $this->scheduledTarget($index);
+            $paid = $this->paidAsOf($deadline);
+            $missed = $fee > 0 && $deadline->gte($billableFrom) && $paid + 0.009 < $expected;
+
+            $advanced = DB::transaction(function () use ($deadline, $next, $missed, $fee, $index, $paid, $expected) {
+                $claimed = DB::table('loans')
+                    ->where('id', $this->id)
+                    ->whereDate('due_date', $deadline->toDateString())
+                    ->update(['due_date' => $next->toDateString()]);
+
+                if ($claimed !== 1) {
+                    return false;
+                }
+
+                if ($missed) {
+                    $this->penalties()->create([
+                        'amount' => $fee,
+                        'reason' => sprintf(
+                            'Missed weekly payment (week %d, due %s): paid ₱%s of the ₱%s due by then',
+                            $index,
+                            $deadline->format('M d, Y'),
+                            number_format(max(0, $paid), 2),
+                            number_format($expected, 2)
+                        ),
+                        'charged_at' => $deadline->toDateString(),
+                    ]);
+                    DB::table('loans')->where('id', $this->id)->increment('penalty_amount', $fee);
+                }
+
+                return true;
+            });
+
+            if (! $advanced) {
+                break;
+            }
+
+            $deadline = $next;
+        }
+
+        // Pull the new values into this in-memory instance without a full
+        // re-fetch (which would re-enter the retrieved hook).
+        $row = DB::table('loans')->where('id', $this->id)->first(['due_date', 'penalty_amount']);
+        if ($row) {
+            $this->setRawAttributes(array_merge($this->getAttributes(), [
+                'due_date' => $row->due_date,
+                'penalty_amount' => $row->penalty_amount,
+            ]), true);
+        }
     }
 
     /**
@@ -131,6 +355,10 @@ class Loan extends Model
         $cursor = $latest ? $latest->entry_date->copy()->addDay() : $this->start_date->copy()->startOfDay();
         $runningBalance = $latest ? (float) $latest->running_balance : (float) $this->total_loan;
 
+        // The query above already told us the latest balance; remember it so
+        // reading interest_amount/balance on this instance costs no more.
+        $this->latestRunningBalance = [$latest ? (float) $latest->running_balance : null];
+
         if ($cursor->gt($cutoff)) {
             return;
         }
@@ -149,6 +377,29 @@ class Loan extends Model
 
             $cursor->addDay();
         }
+
+        $this->latestRunningBalance = [$runningBalance];
+    }
+
+    /**
+     * Latest recorded running balance of a compounding loan, or null if no
+     * entries exist yet. Memoized per instance: interest_amount, balance,
+     * is_overdue, amount_due_this_week… all read it, and each one used to be
+     * its own database query on every serialized loan — painful against a
+     * remote database on a small free host.
+     *
+     * @var array{0: float|null}|null
+     */
+    private ?array $latestRunningBalance = null;
+
+    private function currentRunningBalance(): ?float
+    {
+        if ($this->latestRunningBalance === null) {
+            $latest = $this->interestEntries()->orderByDesc('entry_date')->first();
+            $this->latestRunningBalance = [$latest ? (float) $latest->running_balance : null];
+        }
+
+        return $this->latestRunningBalance[0];
     }
 
     /**
@@ -179,9 +430,9 @@ class Loan extends Model
     {
         return Attribute::get(function () {
             if ($this->compounds_interest) {
-                $latest = $this->interestEntries()->orderByDesc('entry_date')->first();
+                $running = $this->currentRunningBalance();
 
-                return $latest ? round((float) $latest->running_balance - (float) $this->total_loan, 2) : 0.0;
+                return $running !== null ? round($running - (float) $this->total_loan, 2) : 0.0;
             }
 
             $cutoff = $this->accrualCutoff();
@@ -269,8 +520,13 @@ class Loan extends Model
         return Attribute::get(
             // A loan only counts as overdue once the day after its due date has started.
             fn () => ! in_array($this->status, self::CLOSED_STATUSES, true)
-                && $this->due_date !== null
-                && $this->due_date->lt(today())
+                && (
+                    ($this->due_date !== null && $this->due_date->lt(today()))
+                    // An automatic-penalty loan's due date rolls forward every
+                    // week, so "behind" has to be measured by what's unpaid
+                    // from weeks that already ended, not the date alone.
+                    || $this->past_due_amount > 0
+                )
         );
     }
 
@@ -455,6 +711,7 @@ class Loan extends Model
         foreach ($this->penalties()->orderBy('charged_at')->get() as $penalty) {
             $entries[] = [
                 'type' => 'penalty',
+                'id' => $penalty->id,
                 'date' => $penalty->charged_at->toDateString(),
                 'amount' => (float) $penalty->amount,
                 'note' => $penalty->reason,

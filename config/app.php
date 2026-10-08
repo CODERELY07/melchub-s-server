@@ -65,7 +65,11 @@ return [
     |
     */
 
-    'timezone' => 'UTC',
+    // Asia/Manila, not UTC: every "today" in this app (daily interest, the
+    // weekly late-fee deadline, overdue status) is a Philippine calendar
+    // day. Under UTC a deadline only ended at 8:00 AM Manila time the next
+    // morning. Overridable per environment with APP_TIMEZONE.
+    'timezone' => env('APP_TIMEZONE', 'Asia/Manila'),
 
     /*
     |--------------------------------------------------------------------------

@@ -164,6 +164,39 @@ class NotificationController extends Controller
             ];
         }
 
+        // Automatic weekly penalty: the fee and the rolling due date are
+        // handled by Loan::catchUpPenalties(), so Notify is just a reminder
+        // here — if it also charged the old manual fee, a missed week would
+        // be billed twice.
+        if ($loan->auto_penalty) {
+            $due = $loan->due_date->format('M d, Y');
+            $balance = number_format($loan->balance, 2);
+            $amount = $loan->amount_due_this_week;
+            $fee = (float) Setting::get('late_fee_amount', '50');
+
+            if ($amount <= 0) {
+                return [
+                    'text' => "Hi {$loan->name}, your MELCHUB loan {$loan->loan_number} is paid up for this {$periodLabel}. "
+                        ."Next payment is due {$due}. Balance: ₱{$balance}.",
+                    'apply' => null,
+                ];
+            }
+
+            $when = $loan->due_date->isToday() ? 'TODAY' : "by {$due}";
+            $pastDue = $loan->past_due_amount > 0
+                ? ' (includes ₱'.number_format($loan->past_due_amount, 2).' that was already due)'
+                : '';
+            $feeLine = $fee > 0
+                ? ' A ₱'.number_format($fee, 2).' late fee is added automatically if it is not paid.'
+                : '';
+
+            return [
+                'text' => "Hi {$loan->name}, reminder: your MELCHUB loan {$loan->loan_number} needs ₱"
+                    .number_format($amount, 2)." paid {$when}{$pastDue}.{$feeLine}{$gcashLine}",
+                'apply' => null,
+            ];
+        }
+
         if ($loan->due_date->lt(today())) {
             if ($alreadyNotifiedToday) {
                 return [

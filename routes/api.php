@@ -78,6 +78,7 @@ Route::middleware(['auth:sanctum', 'staff', 'role:admin'])->group(function () {
     Route::apiResource('loans', LoansController::class);
     Route::post('/loans/{loan}/payments', [LoansController::class, 'recordPayment']);
     Route::get('/loans/{loan}/history', [LoansController::class, 'history']);
+    Route::delete('/loans/{loan}/penalties/{penalty}', [LoansController::class, 'removePenalty']);
     Route::post('/loans/{loan}/notify', [NotificationController::class, 'notify']);
     Route::post('/loans/notify-due', [NotificationController::class, 'notifyAllDue']);
     Route::post('/loans/{loan}/sms', [NotificationController::class, 'sendCustom']);
