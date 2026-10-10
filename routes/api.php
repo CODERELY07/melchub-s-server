@@ -69,6 +69,9 @@ Route::middleware(['auth:sanctum', 'staff', 'role:admin'])->group(function () {
     Route::post('/register', [AuthController::class, 'register']);
 
     Route::get('/borrowers', [BorrowersController::class, 'index']);
+    Route::get('/borrowers/{borrower}/open-loans', [BorrowersController::class, 'openLoans']);
+    Route::post('/borrowers/{borrower}/payments',[BorrowersController::class, 'recordPayment']);
+    Route::post('/borrowers/{borrower}/notify', [BorrowersController::class, 'notify']);
 
     Route::get('/cash-accounts', [CashAccountController::class, 'index']);
     Route::post('/cash-accounts', [CashAccountController::class, 'store']);

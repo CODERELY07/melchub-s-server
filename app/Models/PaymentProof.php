@@ -8,6 +8,7 @@ class PaymentProof extends Model
 {
     protected $fillable = [
         'loan_id',
+        'borrower_id',
         'amount',
         'file_path',
         'file_url',
@@ -26,9 +27,15 @@ class PaymentProof extends Model
         ];
     }
 
+    /** Null when the proof is for all of the borrower's loans at once. */
     public function loan()
     {
         return $this->belongsTo(Loan::class);
+    }
+
+    public function borrower()
+    {
+        return $this->belongsTo(Borrower::class);
     }
 
     /**

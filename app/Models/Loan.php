@@ -50,6 +50,7 @@ class Loan extends Model
         'balance',
         'is_overdue',
         'installment_amount',
+        'plan_installments',
         'amount_due_this_week',
         'past_due_amount',
         'plan_name',
@@ -149,9 +150,15 @@ class Loan extends Model
             && ! in_array($this->status, self::CLOSED_STATUSES, true);
     }
 
-    private function planInstallments(): int
+    private function installmentCount(): int
     {
         return max(1, RepaymentPlan::lookup($this->repayment_plan)?->installments ?? 5);
+    }
+
+    /** How many payments the loan's plan has (5 if the plan record is gone) — the borrower's schedule shows one row each. */
+    protected function planInstallments(): Attribute
+    {
+        return Attribute::get(fn () => $this->installmentCount());
     }
 
     /**
@@ -162,7 +169,7 @@ class Loan extends Model
     protected function installmentAmount(): Attribute
     {
         return Attribute::get(fn () => round(
-            ((float) $this->total_loan) * (1 / $this->planInstallments() + (((float) $this->interest_rate) / 100) * $this->plan_period_days),
+            ((float) $this->total_loan) * (1 / $this->installmentCount() + (((float) $this->interest_rate) / 100) * $this->plan_period_days),
             2
         ));
     }
@@ -182,7 +189,7 @@ class Loan extends Model
     /** Cumulative amount that should have been paid by deadline number $index (capped at the plan's last installment). */
     private function scheduledTarget(int $index): float
     {
-        return min($index, $this->planInstallments()) * $this->installment_amount;
+        return min($index, $this->installmentCount()) * $this->installment_amount;
     }
 
     /** total_paid as it stood at the end of $date — payments recorded with a later paid_at don't count yet. */
@@ -661,6 +668,8 @@ class Loan extends Model
                     'day' => $i + 1,
                     'amount' => (float) $entry->interest_amount,
                     'note' => 'Compounded — balance now ₱'.number_format((float) $entry->running_balance, 2),
+                    // Structured copy of the same figure, so the app can word it in the viewer's language.
+                    'balance' => (float) $entry->running_balance,
                 ])
                 ->all();
         }

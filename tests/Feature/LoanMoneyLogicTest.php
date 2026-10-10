@@ -1,10 +1,14 @@
 <?php
 
+use App\Http\Controllers\BorrowersController;
+use App\Models\Borrower;
 use App\Models\Loan;
 use App\Models\LoanInterestEntry;
+use App\Models\LoanPayment;
 use App\Models\LoanPenalty;
 use App\Models\RepaymentPlan;
 use App\Models\Setting;
+use App\Services\SmsGatewayService;
 use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -38,6 +42,19 @@ beforeEach(function () {
         $t->decimal('daily_rate', 6, 3)->default(0);
         $t->boolean('is_active')->default(true);
         $t->timestamps();
+    });
+    Schema::create('borrowers', function (Blueprint $t) {
+        $t->id();
+        $t->string('name');
+        $t->string('username')->nullable();
+        $t->string('email')->nullable();
+        $t->string('password')->nullable();
+        $t->string('phone')->nullable();
+        $t->string('location')->nullable();
+        $t->decimal('credit_limit', 12, 2)->nullable();
+        $t->unsignedBigInteger('created_by')->nullable();
+        $t->timestamps();
+        $t->softDeletes();
     });
     Schema::create('loans', function (Blueprint $t) {
         $t->id();
@@ -265,4 +282,92 @@ it('skips the automatic fee when the admin set the late fee to zero', function (
 
     expect(LoanPenalty::count())->toBe(0)
         ->and($loan->due_date->toDateString())->toBe(today()->addDays(5)->toDateString());
+});
+
+// ------------------------------------------------- one payment, all loans
+
+function makeBorrower(): Borrower
+{
+    return Borrower::findOrFail(DB::table('borrowers')->insertGetId([
+        'name' => 'Juan', 'created_at' => now(), 'updated_at' => now(),
+    ]));
+}
+
+// No start_date, so no interest: each loan's balance is exactly 1000 and
+// this week's installment is 1000 × (1/5 + 0.4% × 7) = 228.
+
+it('covers every loan due this week first, soonest due date first, then the rest', function () {
+    $borrower = makeBorrower();
+    $later = insertLoan(['borrower_id' => $borrower->id, 'loan_number' => 'LN-B', 'due_date' => today()->addDays(5)->toDateString()]);
+    $sooner = insertLoan(['borrower_id' => $borrower->id, 'loan_number' => 'LN-A', 'due_date' => today()->addDays(2)->toDateString()]);
+
+    $allocation = $borrower->recordPayment(556, null, null);
+
+    expect(array_column($allocation, 'amount', 'loan_number'))->toBe(['LN-A' => 328.0, 'LN-B' => 228.0])
+        ->and(array_column($allocation, 'loan_id'))->toBe([$sooner, $later])
+        ->and((float) Loan::find($sooner)->total_paid)->toBe(328.0)
+        ->and((float) Loan::find($later)->total_paid)->toBe(228.0)
+        ->and((float) LoanPayment::sum('amount'))->toBe(556.0);
+});
+
+it('never splits into more or less than the amount paid, to the centavo', function () {
+    $borrower = makeBorrower();
+    foreach ([3, 4, 6] as $days) {
+        insertLoan(['borrower_id' => $borrower->id, 'loan_number' => "LN-{$days}", 'due_date' => today()->addDays($days)->toDateString(), 'total_loan' => 333.33]);
+    }
+
+    $allocation = $borrower->recordPayment(500.01, null, null);
+
+    expect(round(array_sum(array_column($allocation, 'amount')), 2))->toBe(500.01)
+        ->and(round((float) LoanPayment::sum('amount'), 2))->toBe(500.01);
+});
+
+it('refuses to take more than the total still owed and records nothing', function () {
+    $borrower = makeBorrower();
+    insertLoan(['borrower_id' => $borrower->id, 'due_date' => today()->addDays(2)->toDateString()]);
+    insertLoan(['borrower_id' => $borrower->id, 'due_date' => today()->addDays(5)->toDateString()]);
+
+    expect(fn () => $borrower->recordPayment(2000.01, null, null))->toThrow(DomainException::class);
+    expect(LoanPayment::count())->toBe(0);
+});
+
+it('texts one reminder with the totals for all of a person\'s loans', function () {
+    $sent = [];
+    app()->instance(SmsGatewayService::class, new class($sent) extends SmsGatewayService
+    {
+        public function __construct(private array &$sent) {}
+
+        public function send(string $phoneNumber, string $text, ?int $loanId = null): void
+        {
+            $this->sent[] = compact('phoneNumber', 'text', 'loanId');
+        }
+    });
+
+    $borrower = makeBorrower();
+    $borrower->forceFill(['phone' => '09170000000'])->save();
+    $later = insertLoan(['borrower_id' => $borrower->id, 'loan_number' => 'LN-B', 'due_date' => today()->addDays(5)->toDateString()]);
+    $sooner = insertLoan(['borrower_id' => $borrower->id, 'loan_number' => 'LN-A', 'due_date' => today()->addDays(2)->toDateString()]);
+
+    app(BorrowersController::class)->notify($borrower);
+
+    expect($sent)->toHaveCount(1)
+        ->and($sent[0]['loanId'])->toBe($sooner)
+        ->and($sent[0]['text'])->toBe(
+            'Hi Juan, MELCHUB reminder for your 2 loans: please pay ₱456.00 by '
+            .today()->addDays(2)->format('M d, Y').'. Total still owed on all: ₱2,000.00.'
+        );
+});
+
+it('marks every loan paid when the full total is paid, and skips closed loans', function () {
+    $borrower = makeBorrower();
+    $a = insertLoan(['borrower_id' => $borrower->id, 'due_date' => today()->addDays(2)->toDateString()]);
+    $b = insertLoan(['borrower_id' => $borrower->id, 'due_date' => null]);
+    $closed = insertLoan(['borrower_id' => $borrower->id, 'status' => 'cancelled', 'due_date' => today()->toDateString()]);
+
+    $allocation = $borrower->recordPayment(2000, null, null);
+
+    expect(array_column($allocation, 'loan_id'))->toBe([$a, $b]) // no due date goes last
+        ->and(Loan::find($a)->status)->toBe('paid')
+        ->and(Loan::find($b)->status)->toBe('paid')
+        ->and(LoanPayment::where('loan_id', $closed)->count())->toBe(0);
 });

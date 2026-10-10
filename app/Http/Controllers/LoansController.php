@@ -19,7 +19,13 @@ class LoansController extends Controller
         $query = Loan::query()->with('borrower')->latest();
 
         if ($status = $request->input('status')) {
-            $query->where('status', $status);
+            // "open" = what the admin works on day to day: loans still being
+            // paid (active, or marked late). The Loans page's default view.
+            if ($status === 'open') {
+                $query->whereIn('status', ['active', 'overdue']);
+            } else {
+                $query->where('status', $status);
+            }
         }
 
         if ($search = $request->input('search')) {
